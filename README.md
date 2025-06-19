@@ -61,7 +61,7 @@ The pipeline requires up to four types of input files, specified via command-lin
 2.  **RNA Counts File (`--rna_counts`)**
     A matrix of raw gene counts from an RNA-seq experiment.
 
-    * **Format:** CSV.
+    * **Format:** CSV/TSV. (see `--sep` argument)
     * **Rows:** Each row represents a gene, with the gene ID in the first column.
     * **Columns:** Each column represents a sample. The column headers must match the `smart_id` values from the metadata file.
 
@@ -70,6 +70,7 @@ The pipeline requires up to four types of input files, specified via command-lin
 
     * **Format:** Identical to the RNA Counts File. The same gene IDs should be used for direct comparison.
 
+** OPTIONAL **
 4.  **Transcript-to-Gene Map (`--tx_table`)**
     A lookup table to map feature IDs (e.g., gene IDs or transcript IDs) to more readable gene names for plotting.
 
