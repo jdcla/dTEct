@@ -70,8 +70,8 @@ The pipeline requires up to four types of input files, specified via command-lin
 
     * **Format:** Identical to the RNA Counts File. The same gene IDs should be used for direct comparison.
 
-** OPTIONAL **
-4.  **Transcript-to-Gene Map (`--tx_table`)**
+
+4.  **OPTIONAL: Transcript-to-Gene Map (`--tx_table`)**
     A lookup table to map feature IDs (e.g., gene IDs or transcript IDs) to more readable gene names for plotting.
 
     * **Format:** CSV.
