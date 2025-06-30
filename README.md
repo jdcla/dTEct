@@ -141,17 +141,17 @@ This section details the command-line options and the logic behind the automated
 | `-f`, `--tag`         | character     | `"gene"`     | The feature level of the counts (e.g., "gene", "transcript"). Used to find the correct ID in `tx_table`.  |
 | `-l`, `--cores`       | integer       | `1`                | Number of cores for parallel processing.                                                                |
 | `-e`, `--batch_factor` | boolean | `FALSE` | If `TRUE`, include `batch_date` as a factor in the design model. |
-| `-v`, `--vst` | boolean | `FALSE` | *(Not implemented in script)* Run VST instead of rlog. |
 
 ### Designing Contrasts (`--contrast_cols`)
 
 This is the most powerful feature of the pipeline. The `--contrast_cols` argument tells the script which columns in the metadata define the experimental groups to be compared.
 
-1.  **Multiple Columns:** You can provide multiple column names separated by commas (e.g., `"source_id,treatment_id"`). The script will create a new, combined factor by pasting these columns together (e.g., `CD8T__ACU_AGST`).
+1.  **Multiple Factors:** The script is desinged to take into account multiple factors. By default, it will factor in an effect for Sequencing type.
+    - **Multiple Columns:** You can provide multiple column names separated by commas (e.g., `"source_id,treatment_id"`). The script will create a new, combined factor by pasting these columns together (e.g., `CD8T__ACU_AGST`).
+    - **Combinatorial Groups:** The script can parse group names with combinatorial factors separated by `_and_`. For instance, it can evaluate a group of samples with combined factors `DrugA_and_Time24h` with `DrugB_and_Time24h` and find the effect of the individual effects as well as the combined effects.
+    - **Batch date:** Batch dates can be taken in as a factor as well, see `--batch_factor`. However, based on the number of batch dates across individual samples, this might make it impossible to factor our individual effects due to correlated factors (for which the code will return an error).  
 
-2.  **Hierarchical Groups:** The script understands hierarchical relationships defined by a dot (`.`) in group names. For example, if you have groups `Tumor.TypeA` and `Tumor.TypeB`, the script recognizes they both belong to the `Tumor` supergroup and will generate a contrast between them. It will not compare them to an unrelated group like `Normal.Tissue`. Furthermore, it will evaluate contrasts between multiple supergroups if present. The code will correctly weight the contribution of the subgroups to the 
-
-3.  **Combinatorial Groups:** The script can parse group names with combinatorial factors separated by `_and_`. For instance, it can compare `DrugA_and_Time24h` with `DrugB_and_Time24h` to find the effect of the drug at a specific timepoint.
+2.  **Hierarchical Groups:** The script understands hierarchical relationships defined by a dot (`.`) in group names. For example, if you have groups `Tumor.TypeA` and `Tumor.TypeB`, the script recognizes they both belong to the `Tumor` supergroup and will generate a contrast between them. It will not compare them to an unrelated group like `Normal.Tissue`. By default, the script will evaluate contrasts between all supergroups if present. **The code will automatically weigh the contribution of the subgroups to the number of samples within this group**. For example, in a setting with 2 Sonic Hedgehog Medulloblastoma (MBL.SHH) and 3 Group 4 Medulloblastoma (MBL) samples, the effect of the supergroup medulloblastoma is ($\mu_{MBL} = 0.4 \mu_{MBL.SHH} + 0.6 \mu_{MBL.MYC}$.
 
 ### Analysis Types Explained
 
