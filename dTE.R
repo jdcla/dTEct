@@ -424,15 +424,15 @@ opt_parser <- OptionParser(option_list=option_list)
 opt        <- parse_args(opt_parser)
 
 ### DEBUGING ### 
-opt$metadata <- "example/metadata.csv"
-opt$rna_counts <- "example/rna_numreads.csv"
-opt$ribo_counts <- "example/ribo_numreads.csv"
-opt$count_col <- 5
-opt$sep <- ","
-opt$outdir <- "example_out/"
-opt$tx_table <- "example/tx_table.csv"
-opt$contrast_cols <- "source_id,treatment_id"
-opt$cores <- 4
+# opt$metadata <- "example/metadata.csv"
+# opt$rna_counts <- "example/rna_numreads.csv"
+# opt$ribo_counts <- "example/ribo_numreads.csv"
+# opt$count_col <- 5
+# opt$sep <- ","
+# opt$outdir <- "example_out/"
+# opt$tx_table <- "example/tx_table.csv"
+# opt$contrast_cols <- "source_id,treatment_id"
+# opt$cores <- 4
 
 # HARDCODE TAG
 opt$tag <- "gene"
@@ -553,12 +553,12 @@ if (!is.null(opt$rna_counts) && !is.null(opt$ribo_counts)) {
   out_dirs <- c(dirname(opt$rna_counts), dirname(opt$ribo_counts))
 } else if (!is.null(opt$rna_counts)) {
   counts <- rna_counts
-  meta.table <- meta.rna
+  meta.table <- meta.table
   seq_types <- c("RNA")
   out_dirs <- c(dirname(opt$rna_counts))
 } else {
   counts <- ribo_counts
-  meta.table <- meta.ribo
+  meta.table <- meta.table
   seq_types <- c("Ribo")
   out_dirs <- c(dirname(opt$ribo_counts))
 }
