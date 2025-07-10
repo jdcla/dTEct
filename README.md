@@ -104,7 +104,7 @@ Rscript dTE.R \
 
 ### 3. Check the Output
 
-The script will create an output directory (e.g., `example_out/`) with the following structure:
+make sure to create an output directory first (e.g., `example_out/`). Within this directory, the script will generate the following structure:
 
 * **`example_out/`**
     * `RNA/`: Results for differential expression on RNA-seq data.
