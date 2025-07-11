@@ -8,6 +8,7 @@ library(pheatmap)
 library(RColorBrewer)
 library(DEFormats)
 library(BiocParallel)
+options(show.error.locations = TRUE)
 
 # MDS -------------------------------------------------------------------------
 eval_MDS <- function(dge.set, meta, cols_of_interest, prefix, suffix) {
@@ -409,7 +410,7 @@ option_list <- list(
     make_option(c("-i", "--rna_counts"    ), type="character", default=NULL                 , metavar="path"   , help="Count file matrix where rows are genes and columns are samples."                        ),
     make_option(c("-j", "--ribo_counts"   ), type="character", default=NULL                 , metavar="path"   , help="Count file matrix where rows are genes and columns are samples."                        ),
     make_option(c("-c", "--count_col"     ), type="integer"  , default=5                    , metavar="integer", help="First column containing sample count data."                                             ),
-    make_option(c("-t", "--tx_table"      ), type="character", default=''                   , metavar="path",    help="Table linking transcript and gene IDs/names"                                             ),
+    make_option(c("-t", "--tx_table"      ), type="character", default=NULL                   , metavar="path",    help="Table linking transcript and gene IDs/names"                                             ),
     make_option(c("-d", "--id_col"        ), type="integer"  , default=1                    , metavar="integer", help="Column containing identifiers to be used."                                              ),
     make_option(c("-s", "--sep"           ), type="character", default=','                  , metavar="string" , help="Separator of input table."                                              ),
     make_option(c("-o", "--outdir"        ), type="character", default='out', metavar="path"   , help="Output directory."                                                                      ),
@@ -513,10 +514,22 @@ if (!is.null(opt$tx_table)) {
   )
 } else {
   # Create dummy feature2name table from unique rownames of both ribo_counts and rna_counts
-  feature2name <- data.frame(
-      id = unique(c(rownames(ribo_counts), rownames(rna_counts))),
-      name = unique(c(rownames(ribo_counts), rownames(rna_counts)))
-  )
+  if (!is.null(opt$rna_counts) && !is.null(opt$ribo_counts)) {
+    feature2name <- data.frame(
+        id = unique(c(rownames(ribo_counts), rownames(rna_counts))),
+        name = unique(c(rownames(ribo_counts), rownames(rna_counts)))
+    )
+  } else if (!is.null(opt$rna_counts)) {
+    feature2name <- data.frame(
+        id = rownames(rna_counts),
+        name = rownames(rna_counts)
+    )
+  } else {
+    feature2name <- data.frame(
+        id = rownames(ribo_counts),
+        name = rownames(ribo_counts)
+    )
+  }
 }
 
 # Create dirs
