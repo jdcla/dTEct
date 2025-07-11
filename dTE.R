@@ -1,13 +1,15 @@
-library(edgeR)
-library(EnhancedVolcano)
-library(ggplot2)
-library(optparse)
-library(tidyverse)
-library(DESeq2)
-library(pheatmap)
-library(RColorBrewer)
-library(DEFormats)
-library(BiocParallel)
+suppressPackageStartupMessages({
+  library(edgeR)
+  library(EnhancedVolcano)
+  library(ggplot2)
+  library(optparse)
+  library(tidyverse)
+  library(DESeq2)
+  library(pheatmap)
+  library(RColorBrewer)
+  library(DEFormats)
+  library(BiocParallel)
+})
 options(show.error.locations = TRUE)
 
 # MDS -------------------------------------------------------------------------
@@ -19,11 +21,11 @@ eval_MDS <- function(dge.set, meta, cols_of_interest, prefix, suffix) {
   plot_data <- data.frame(
     x = pcaData$x,
     y = pcaData$y,
-    disease_id = meta$disease_id,
-    treatment_id = meta$treatment_id,
-    location_id = meta$location_id,
     rep = meta$rep
   )
+  for (col in cols_of_interest) {
+    plot_data[[col]] <- meta[[col]]
+  }
   for (i in seq_along(cols_of_interest)) {
     col <- cols_of_interest[[i]]
     plot <- ggplot(plot_data, aes(x = x, y = y, color=meta[[col]], shape=meta$rep)) +
@@ -46,11 +48,11 @@ eval_PCA <- function(dge.set, meta, cols_of_interest, prefix, suffix) {
   plot_data <- data.frame(
     x = pcaData$x,
     y = pcaData$y,
-    disease_id = meta$disease_id,
-    treatment_id = meta$treatment_id,
-    location_id = meta$location_id,
     rep = meta$rep
   )
+  for (col in cols_of_interest) {
+    plot_data[[col]] <- meta[[col]]
+  }
   for (i in seq_along(cols_of_interest)) {
     col <- cols_of_interest[[i]]
     plot <- ggplot(plot_data, aes(x = x, y = y, color=meta[[col]], shape=meta$rep)) +
@@ -112,7 +114,7 @@ eval_gene_clusters <- function(norm_counts, meta, meta_cols, prefix, suffix) {
     mat <- norm_counts[topVarGenes, ]
     mat <- mat - rowMeans(mat)
     rownames(mat) <- feature2name[match(rownames(mat), feature2name[,"id"]), "name"]
-    anno <- as.data.frame(meta[,c("disease_id", "treatment_id", "location_id", "rep", "batch_date")])
+    anno <- as.data.frame(meta[,c(meta_cols, "rep", "batch_date")])
     if (i == 1) {
       rownames(anno) <- colnames(mat)
     }
@@ -155,7 +157,9 @@ evaluate_unique_contrast <- function(meta, uniq_val, contrast_col, fit, outdir, 
     uniq_rna <- construct_contrast_string(rna_vals[[contrast_col]], "RNA", meta, weight_dict_rna)
     # TE
     uniq_contrast <- paste0("makeContrasts(", uniq_ribo, " - ", uniq_rna, ", levels=design)")
-    print(uniq_contrast)
+    if (!is.null(uniq_contrast)) {
+      print(uniq_contrast)
+    }
     contrast_id <- paste0(uniq_val, strat_string, "_TE")
     out_prefix <- paste0(outdir, "TE/", contrast_id)
     title <- paste0(contrast_id, "    (n = ", n_ribo, " / ", n_rna, ")")
@@ -225,7 +229,9 @@ evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit, outdi
     contrast_id <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA")
     out_prefix <- paste0(outdir, "RNA/", contrast_id)
     title <- paste0(contrast_id, "    (n = ", n_rna[[1]], " / ", n_rna[[2]], ")")
-    print(grp_contrast)
+    if (!is.null(grp_contrast)) {
+      print(grp_contrast)
+    }
     eval_contrast(fit, grp_contrast, out_prefix, title, log_file)
   }
   if (length(unlist(grp_ribo)) == 2) {
@@ -234,7 +240,9 @@ evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit, outdi
     contrast_id <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_Ribo")
     out_prefix <- paste0(outdir, "Ribo/", contrast_id)
     title <- paste0(contrast_id, "    (n = ", n_ribo[[1]], " / ", n_ribo[[2]], ")")
-    print(grp_contrast)
+    if (!is.null(grp_contrast)) {
+      print(grp_contrast)
+    }
     eval_contrast(fit, grp_contrast, out_prefix, title, log_file)
   }
   if ((length(unlist(grp_ribo)) == 2) && (length(unlist(grp_rna)) == 2)) {
@@ -245,7 +253,9 @@ evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit, outdi
     contrast_id <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_dTE")
     out_prefix <- paste0(outdir, "dTE/", contrast_id)
     title <- paste0(contrast_id, "    (n = ", n_ribo[[1]], " / ", n_rna[[1]], " / ", n_ribo[[2]], " / ", n_rna[[2]], ")")
-    print(grp_contrast)
+    if (!is.null(grp_contrast)) {
+      print(grp_contrast)
+    }
     eval_contrast(fit, grp_contrast, out_prefix, title, log_file)
   }
 }
@@ -409,7 +419,7 @@ option_list <- list(
     make_option(c("-m", "--metadata"  ), type="character", metavar="path"   , help="project sample sheet containing sample groups and ids."                        ),
     make_option(c("-i", "--rna_counts"    ), type="character", default=NULL                 , metavar="path"   , help="Count file matrix where rows are genes and columns are samples."                        ),
     make_option(c("-j", "--ribo_counts"   ), type="character", default=NULL                 , metavar="path"   , help="Count file matrix where rows are genes and columns are samples."                        ),
-    make_option(c("-c", "--count_col"     ), type="integer"  , default=5                    , metavar="integer", help="First column containing sample count data."                                             ),
+    make_option(c("-c", "--count_col"     ), type="integer"  , default=2                    , metavar="integer", help="First column containing sample count data."                                             ),
     make_option(c("-t", "--tx_table"      ), type="character", default=NULL                   , metavar="path",    help="Table linking transcript and gene IDs/names"                                             ),
     make_option(c("-d", "--id_col"        ), type="integer"  , default=1                    , metavar="integer", help="Column containing identifiers to be used."                                              ),
     make_option(c("-s", "--sep"           ), type="character", default=','                  , metavar="string" , help="Separator of input table."                                              ),
@@ -454,7 +464,7 @@ meta.table <- read_csv(
   col_types = cols(
     replicate_num = col_character()
   )
-) |> mutate(counts_col = ifelse(data_type == "RNA_seq", paste0(smart_id, "_RNA"), paste0(smart_id, "_Ribo")))
+) |> mutate(counts_col = ifelse(data_type %in% c("RNA_seq", "ONTRNA_seq"), paste0(smart_id, "_RNA"), paste0(smart_id, "_Ribo")))
 
 if (!is.null(opt$ribo_counts)) {
   ribo_counts <- (
@@ -475,8 +485,11 @@ if (!is.null(opt$ribo_counts)) {
       # Rename columns to append '_Ribo'
       rename_with(.fn = function(s) { paste(s, "_Ribo", sep = "") })
   )
+  # report the colnames of ribo_counts
+  print(str_c("Ribo counts columns: ", paste(colnames(ribo_counts), collapse = ", ")))
+  # Log the number of rows and columns in ribo_counts
+  cat("Ribo counts matrix dimensions: ", nrow(ribo_counts), " rows, ", ncol(ribo_counts), " columns\n", file = log_file, append = TRUE)
 }
-
 if (!is.null(opt$rna_counts)) {
   rna_counts <- read.csv(
       opt$rna_counts,
@@ -493,6 +506,10 @@ if (!is.null(opt$rna_counts)) {
           .fns = ~ as.integer(.x)
       )) %>%
       rename_with(.fn = function(s){paste(s, "_RNA", sep="")})
+  # report the colnames of ribo_counts
+  print(str_c("RNA counts columns: ", paste(colnames(rna_counts), collapse = ", ")))
+  # Log the number of rows and columns in rna_counts
+  cat("RNA counts matrix dimensions: ", nrow(rna_counts), " rows, ", ncol(rna_counts), " columns\n", file = log_file, append = TRUE)
 }
 
 if (!is.null(opt$tx_table)) {
@@ -533,10 +550,10 @@ if (!is.null(opt$tx_table)) {
 }
 
 # Create dirs
-dir.create(paste0(opt$out, 'dTE'))
-dir.create(paste0(opt$out, 'Ribo'))
-dir.create(paste0(opt$out, 'RNA'))
-dir.create(paste0(opt$out, 'TE'))
+dir.create(paste0(opt$out, 'dTE'), showWarnings = FALSE, recursive = TRUE)
+dir.create(paste0(opt$out, 'Ribo'), showWarnings = FALSE, recursive = TRUE)
+dir.create(paste0(opt$out, 'RNA'), showWarnings = FALSE, recursive = TRUE)
+dir.create(paste0(opt$out, 'TE'), showWarnings = FALSE, recursive = TRUE)
 
 # Intersect RNA and Ribo counts -------------------------------------------------
 ## canonical sequences
@@ -581,7 +598,9 @@ if (!is.null(opt$rna_counts) && !is.null(opt$ribo_counts)) {
 
 # Get rid of NA (can use more investigation how these appear)
 mask <- apply(is.na(counts), 1, any)
-print(str_c("detected ", sum(mask), " NA rows"))
+if (sum(mask) > 0) {
+  print(str_c("detected ", sum(mask), " NA rows"))
+}
 counts <- counts[mask == FALSE,]
 
 # Import and process metadata --------------------------------------------------------------
@@ -589,13 +608,12 @@ meta.table <- (
   meta.table
   |> group_by(smart_id, data_type)
   |> mutate(
-    seq_type = str_split_i(data_type, "_", i=1),
+    seq_type = recode(data_type, "RNA_seq" = "RNA", "ONTRNA_seq" = "RNA", "Ribo_seq" = "Ribo"),
     across(everything(), ~ replace_na(as.character(.), "NA")),
   )
   |> slice_sample(n = 1)
   |> ungroup()
 )
-
 # Remove Subgroup info of samples with only a single instance of that contrast (stratified over R-seq data)
 # Iterate samples from lowest level to highest
 for (contrast in contrast_grps) {
@@ -648,7 +666,12 @@ if (length(contrast_grps) > 1) {
 for (column in meta_cols) {
   # For replace all : with . (only possible for treatment_id's)
   # TODO figure out how to use combinatorial effects more smartly
-  meta.table[[column]] <- gsub(":", "_and_", meta.table[[column]])
+  if (!is.null(meta.table[[column]]) && length(meta.table[[column]]) > 0) {
+    meta.table[[column]] <- gsub(":", "_and_", meta.table[[column]])
+  } else {
+    warning(sprintf("Column '%s' is missing or empty in meta.table. Skipping processing for this column.", column))
+    next
+  }
   # Get max splits
   max_splits <- max(str_count(meta.table[[column]], "\\.") + 1)
   num_col_splits[[column]] <- max_splits
@@ -693,14 +716,37 @@ for (column in meta_cols) {
   }
   comb_dict[[column]] <- combs
   uniq_dict[[column]] <- unique(unlist(combs))
+  # Print warning if no combinations found
+  # if (length(combs) == 0) {
+  #   warning(sprintf("No valid combinations found for suggested column name '%s'.", column))
+  # }
 }
-
+# Print the combinations and unique entries
+cat("Combinations and unique entries for each column:\n", file = log_file, append = TRUE)
+for (col in names(comb_dict)) {
+  cat(str_c(col, ":\n"), file = log_file, append = TRUE)
+  cat(paste0(" - ", paste(comb_dict[[col]], collapse = "\n - ")), "\n", file = log_file, append = TRUE)
+  cat(str_c("Unique entries: ", paste(uniq_dict[[col]], collapse = ", ")), "\n", file = log_file, append = TRUE)
+}
 # TODO: validate presence of both data types
 # Report on sample_ids filtered out because of missing data
-cat("Filtered out sample_ids due to missing data:\n", file = log_file, append = TRUE)
-cat(paste0(" - ", meta.table$smart_id[!meta.table$smart_id %in% colnames(counts)], collapse = "\n"), "\n", file = log_file, append = TRUE)
+# Identify filtered out sample_ids due to missing count data
+filtered_sample_ids <- paste0(meta.table$smart_id, "_", meta.table$seq_type)
+filtered_sample_ids <- filtered_sample_ids[!filtered_sample_ids %in% colnames(counts)]
+if (length(filtered_sample_ids) > 0) {
+  cat("Filtered out sample_ids due to missing count data:\n", file = log_file, append = TRUE)
+  for (sid in filtered_sample_ids) {
+    cat(" - ", sid, "\n", file = log_file, append = TRUE)
+  }
+}
 
 # Generate column names according to the maximum number of splits
+if (!"sample_type" %in% colnames(meta.table)) {
+  meta.table$sample_type <- "NA"
+}
+if (!"batch_date" %in% colnames(meta.table)) {
+  meta.table$batch_date <- "NA"
+}
 meta.samples <- (
   meta.table
   |> filter(
@@ -739,7 +785,10 @@ for (col in temp) {
 contrast_cols <- unlist(contrast_cols)
 select_cols <- c("counts_col", contrast_cols, "seq_type")
 # ensure batch_date and seq_type are not perfectly correlated
-corr_factor <- cor(as.numeric(meta.samples$seq_type), as.numeric(meta.samples$batch_date))
+corr_factor <- suppressWarnings({
+  cf <- cor(as.numeric(meta.samples$seq_type), as.numeric(meta.samples$batch_date))
+  if (is.na(cf)) 0 else cf
+})
 if (!opt$no_batch_factor && length(unique(meta.samples$batch_date)) > 1 && abs(corr_factor) < 0.99) {
   # Replace values that appear only once with "NaN"
   # batch_counts <- table(meta.samples$batch_date)
@@ -819,7 +868,6 @@ for (i in seq_along(seq_types)) {
   } else {
     prefix <- "gene_agg"
   }
-  print(str_c(out_dir, "/", prefix, "_cpm_log_matrix.csv"))
   logcpm_counts <- cpm(norm_counts_list[[seq_type]], normalized.lib.sizes = TRUE, log=TRUE, prior.count=1)
   formatted_data <- rownames_to_column(data.frame(format(logcpm_counts, digits=3, nsmall = 3)), "Name")
   write.table(formatted_data, file=str_c(out_dir, "/", prefix, "_cpm_log_matrix.csv"), sep=",", row.names = FALSE, quote=FALSE)
