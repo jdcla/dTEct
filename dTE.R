@@ -9,6 +9,7 @@ suppressPackageStartupMessages({
   library(RColorBrewer)
   library(DEFormats)
   library(BiocParallel)
+  library(svglite)
 })
 options(show.error.locations = TRUE)
 
@@ -70,20 +71,26 @@ eval_PCA <- function(dge.set, meta, cols_of_interest, prefix, suffix) {
 
 eval_heatmap <- function(norm_counts, meta, meta_cols, prefix, suffix) {
   xy_dim <- max(dim(meta)[1]*0.15, 7)
-  fig(str_c(prefix, "Heatmap_1_", suffix), xy_dim, xy_dim)
   sampleDists <- dist(t(norm_counts))
   sampleDistMatrix <- as.matrix(sampleDists)
   colnames(sampleDistMatrix) <- meta$counts_col 
   rownames(sampleDistMatrix) <- apply(meta[, meta_cols], 1, paste, collapse = "__")
   # colnames(sampleDistMatrix) <- NULL
   colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
-  pheatmap(sampleDistMatrix,
-    clustering_distance_rows = sampleDists,
-    clustering_distance_cols = sampleDists,
-    col = colors,
-    main = paste0(suffix, ": Euclidean distance between counts of samples on fitted data.")
-  )
-  w()
+  for (fmt in c("png", "svg")) {
+    if (fmt == "png") {
+      pngfig(str_c(prefix, "Heatmap_1_", suffix), xy_dim, xy_dim)
+    } else {
+      svgfig(str_c(prefix, "Heatmap_1_", suffix), xy_dim, xy_dim)
+    }
+    pheatmap(sampleDistMatrix,
+      clustering_distance_rows = sampleDists,
+      clustering_distance_cols = sampleDists,
+      col = colors,
+      main = paste0(suffix, ": Euclidean distance between counts of samples on fitted data.")
+    )
+    w()
+  }
   # Sort the column and row names
   sorted_col_order <- order(colnames(sampleDistMatrix))
   sorted_row_order <- order(rownames(sampleDistMatrix))
@@ -109,7 +116,6 @@ eval_gene_clusters <- function(norm_counts, meta, meta_cols, prefix, suffix) {
   k_genes <- max(dim(meta)[1]*0.7, 50)
   y_dim <- k_genes * 0.23
   for (i in 1:1) {
-    fig(str_c(prefix, "GeneClusters_", i, "_", suffix), x_dim, y_dim)
     topVarGenes <- head(order(rowVars(norm_counts), decreasing = TRUE), k_genes)
     mat <- norm_counts[topVarGenes, ]
     mat <- mat - rowMeans(mat)
@@ -118,8 +124,15 @@ eval_gene_clusters <- function(norm_counts, meta, meta_cols, prefix, suffix) {
     if (i == 1) {
       rownames(anno) <- colnames(mat)
     }
-    pheatmap(mat, annotation_col = anno, main=suffix)
-    w()
+    for (fmt in c("png", "svg")) {
+      if (fmt == "png") {
+        pngfig(str_c(prefix, "Heatmap_1_", suffix), x_dim, y_dim)
+      } else {
+        svgfig(str_c(prefix, "Heatmap_1_", suffix), x_dim, y_dim)
+      }
+      pheatmap(mat, annotation_col = anno, main=suffix)
+      w()
+    }
   }
 }
 
@@ -194,7 +207,7 @@ evaluate_combination_contrast <- function(meta, tup, contrast_col, fit, outdir, 
     ribo_grp_mask <- grp_mask & ribo_mask
     n_ribo[[i]] <- sum(ribo_grp_mask)
     rna_grp_mask <- grp_mask & rna_mask
-    n_rna[[i]] <- sum(ribo_grp_mask)
+    n_rna[[i]] <- sum(rna_grp_mask)
     if (sum(ribo_grp_mask) != 0) {
       ribo_vals <- unique(meta[ribo_grp_mask, col])
       weight_dict_ribo <- as.list(table(meta[ribo_grp_mask, col])/sum(ribo_grp_mask))
@@ -260,12 +273,20 @@ evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit, outdi
   }
 }
 
-fig <- function(filename, width=7, height=7) {
+pngfig <- function(filename, width=7, height=7) {
   w <- width*90
   h <- height*90
-  f <- str_c(filename, ".png")
-  print(str_c("Outputting: ", f, " as PNG, ", w, "x", h))
-  png(f, width=w, height=h)
+  f_png <- str_c(filename, ".png")
+  print(str_c("Outputting: ", f_png, " as PNG, ", w, "x", h))
+  png(f_png, width=w, height=h, units="px")
+}
+
+svgfig <- function(filename, width=7, height=7) {
+  w <- width*90
+  h <- height*90
+  f_svg <- str_c(filename, ".svg")
+  print(str_c("Outputting: ", f_svg, " as SVG, ", w, "x", h))
+  svg(f_svg, width=w, height=h)
 }
 
 w <- function() {
@@ -275,9 +296,13 @@ w <- function() {
 gfig <- function(plot, filename, width=7, height=7) {
   w <- width*90
   h <- height*90
-  f <- paste0(filename, ".png")
-  print(str_c("Outputting: ", f, " as PNG, ", w, "x", h))
-  ggsave(f, plot=plot, width=w, height=h, units="px", dpi=250)
+  # Always save as both PNG and SVG
+  f_png <- paste0(filename, ".png")
+  print(str_c("Outputting: ", f_png, " as PNG, ", w, "x", h))
+  ggsave(f_png, plot=plot, width=w, height=h, units="px", dpi=250)
+  f_svg <- paste0(filename, ".svg")
+  print(str_c("Outputting: ", f_svg, " as SVG, ", width, "x", height))
+  ggsave(f_svg, plot=plot, width=w*1.25, height=h*1.25, units="px")
 }
 
 # Function to get substring up to the n'th occurrence of a character
@@ -420,14 +445,14 @@ option_list <- list(
     make_option(c("-i", "--rna_counts"    ), type="character", default=NULL                 , metavar="path"   , help="Count file matrix where rows are genes and columns are samples."                        ),
     make_option(c("-j", "--ribo_counts"   ), type="character", default=NULL                 , metavar="path"   , help="Count file matrix where rows are genes and columns are samples."                        ),
     make_option(c("-c", "--count_col"     ), type="integer"  , default=2                    , metavar="integer", help="First column containing sample count data."                                             ),
-    make_option(c("-t", "--tx_table"      ), type="character", default=NULL                   , metavar="path",    help="Table linking transcript and gene IDs/names"                                             ),
+    make_option(c("-t", "--tx_table"      ), type="character", default=NULL                   , metavar="path",    help="Table linking transcript and gene IDs/names"                                          ),
+    make_option(c("-f", "--tx_table_col"  ), type="character",  default="gene_id"        , metavar="string" , help="column name of tx_table to use as keys"                                                    ),
     make_option(c("-d", "--id_col"        ), type="integer"  , default=1                    , metavar="integer", help="Column containing identifiers to be used."                                              ),
     make_option(c("-s", "--sep"           ), type="character", default=','                  , metavar="string" , help="Separator of input table."                                              ),
     make_option(c("-o", "--outdir"        ), type="character", default='out', metavar="path"   , help="Output directory."                                                                      ),
     make_option(c("-v", "--vst"           ), type="logical"  , default=FALSE                , metavar="boolean", help="Run vst transform instead of rlog."                                                     ),
     make_option(c("-l", "--cores"         ), type="integer"  , default=1                    , metavar="integer", help="Number of cores."                                                                       ),
-    # make_option(c("-f", "--tag"           ), type="character",  default="gene"        , metavar="string" , help="feature level of the counts."                                                           ),
-    make_option(c("-a", "--contrast_cols" ), type="character", default="treatment_id"               , metavar="character", help="Column names from which contrasts are derived; separated by commas."                  ),
+    make_option(c("-a", "--contrast_cols" ), type="character", default="treatment_id"               , metavar="character", help="Column names from which contrasts are derived; separated by commas."          ),
     make_option(c("-e", "--no_batch_factor"), type="logical" , default=FALSE,               , metavar="boolean", help="Don't create factors for batch date. Can be necessary to achieve full rank for some settings")
 )
 
@@ -435,18 +460,16 @@ opt_parser <- OptionParser(option_list=option_list)
 opt        <- parse_args(opt_parser)
 
 ### DEBUGING ### 
-# opt$metadata <- "example/metadata.csv"
-# opt$rna_counts <- "example/rna_numreads.csv"
-# opt$ribo_counts <- "example/ribo_numreads.csv"
+# opt$metadata <- "sample_sheet.csv"
+# opt$rna_counts <- "out/rna/quants/salmon.STD_TS.NA/gene_agg_NumReads_matrix.csv"
+# opt$ribo_counts <- "out/ribo/quants/salmon.STD_TS.STD_TL/gene_agg_NumReads_matrix.csv"
 # opt$count_col <- 5
 # opt$sep <- ","
-# opt$outdir <- "example_out/"
-# opt$tx_table <- "example/tx_table.csv"
+# opt$outdir <- "test/"
+# opt$tx_table <- "out/targets/STD_TS/STD_TL/tx_table.csv"
 # opt$contrast_cols <- "source_id,treatment_id"
 # opt$cores <- 4
 
-# HARDCODE TAG
-opt$tag <- "gene"
 # Multi-core processing
 register(MulticoreParam(opt$cores))
 # Parsing multi-group contrasts
@@ -518,11 +541,11 @@ if (!is.null(opt$tx_table)) {
   # Create dictionary that connects counts row id with <GENENAME:TRANSCRIPT_CDSTIS>
   feature2name <- (
       tx.table 
-      |> select(paste0(opt$tag,'_id'), "gene_name")
+      |> select(opt$tx_table_col, "gene_name")
       |> distinct()
-      |> dplyr::rename(id = paste0(opt$tag, '_id'), name=gene_name)
+      |> dplyr::rename(id = opt$tx_table_col, name=gene_name)
       %>% {
-          if (opt$tag == "transcript") 
+          if (opt$tx_table_col == "transcript_id") 
               mutate(., name = paste(name, id, sep=":"))
           else .
       }
@@ -659,9 +682,8 @@ meta_cols <- unique(c("location_id", "disease_id", "treatment_id", contrast_grps
 # Combine contrast group columns
 if (length(contrast_grps) > 1) {
   meta.table[[contrast_col]] <- do.call(paste, c(meta.table[contrast_grps], sep=":"))
-  meta_cols <- c(meta_cols, contrast_grps, contrast_col)
+  meta_cols <- unique(c(meta_cols, contrast_grps, contrast_col))
 } 
-
 # Split columns into subclasses
 for (column in meta_cols) {
   # For replace all : with . (only possible for treatment_id's)
@@ -863,7 +885,7 @@ norm_counts_list <- list(RNA=dge[,meta.samples$seq_type == "RNA"], Ribo=dge[,met
 for (i in seq_along(seq_types)) {
   seq_type <- seq_types[i]
   out_dir <- out_dirs[i]
-  if (opt$tag == "transcript") {
+  if (opt$tx_table_col == "transcript_id") {
     prefix <- "no_agg" 
   } else {
     prefix <- "gene_agg"

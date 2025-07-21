@@ -30,7 +30,7 @@ Alternatively, you can install all required packages by running the following co
 
 ```R
 # Install packages from CRAN
-install.packages(c("optparse", "tidyverse", "pheatmap", "RColorBrewer", "ggplot2"))
+install.packages(c("optparse", "tidyverse", "pheatmap", "RColorBrewer", "ggplot2", "svglite"))
 
 # Install packages from Bioconductor
 if (!require("BiocManager", quietly = TRUE))
@@ -133,12 +133,12 @@ This section details the command-line options and the logic behind the automated
 | `-i`, `--rna_counts`  | path          | `NULL`             | Path to the RNA-seq count matrix.                                                                       |
 | `-j`, `--ribo_counts` | path          | `NULL`             | Path to the Ribo-seq count matrix.                                                                      |
 | `-t`, `--tx_table`    | path          | `''`               | Path to the table linking transcript and gene IDs/names.                                                |
+| `-f`, `--tx_table_col`  | character     | `"gene"`     | The column name of `tx_table` to use as key. Used to find the correct ID in `tx_table`.  |
 | `-a`, `--contrast_cols`| character   | `"treatment_id"`   | Comma-separated metadata column names from which contrasts are derived.                                 |
 | `-c`, `--count_col`   | integer       | `5`                | First column in the count files containing sample count data. *(Note: script logic seems to override this).* |
 | `-d`, `--id_col`      | integer       | `1`                | Column in the count files containing feature identifiers. *(Note: script logic seems to override this).* |
 | `-s`, `--sep`         | character     | `,`                | Separator used in input tables.                                                                         |
 | `-o`, `--outdir`      | path          | `out`              | Output directory for results.                                                                           |
-| `-f`, `--tag`         | character     | `"gene"`     | The feature level of the counts (e.g., "gene", "transcript"). Used to find the correct ID in `tx_table`.  |
 | `-l`, `--cores`       | integer       | `1`                | Number of cores for parallel processing.                                                                |
 | `-e`, `--batch_factor` | boolean | `FALSE` | If `TRUE`, include `batch_date` as a factor in the design model. |
 
