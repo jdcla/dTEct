@@ -35,10 +35,11 @@ eval_MDS <- function(dge.set, meta, cols_of_interest, prefix, suffix) {
       geom_text(aes(label = meta$rep), size=4, color = "black") +
       xlab(paste0("PC1: ", percentVar[1], "% variance explained")) +
       ylab(paste0("PC2: ", percentVar[2], "% variance explained")) +
-      ggtitle(paste0("MDS on fitted ", suffix, " data (all counts/edgeR)"))
+      ggtitle(paste0("MDS on fitted ", suffix, " data (all counts/edgeR)")) +
+      labs(color = col, shape="replicate")
     gfig(plot, str_c(prefix, "MDS_", i, "_", suffix), xy_dim, xy_dim)
+    }
   }
-}
 
 # PCA -------------------------------------------------------------------------
 eval_PCA <- function(dge.set, meta, cols_of_interest, prefix, suffix) {
@@ -62,7 +63,8 @@ eval_PCA <- function(dge.set, meta, cols_of_interest, prefix, suffix) {
       geom_text(aes(label = meta$rep), size=4, color = "black") +
       xlab(paste0("PC1: ", percentVar[1], "% variance explained")) +
       ylab(paste0("PC2: ", percentVar[2], "% variance explained")) +
-      ggtitle(paste0(suffix, ": PCA on fitted data (all counts/edgeR)"))
+      ggtitle(paste0(suffix, ": PCA on fitted data (all counts/edgeR)")) +
+      labs(color = col, shape="replicate")
     gfig(plot, str_c(prefix, "PCA_", i, "_", suffix), xy_dim, xy_dim)
   }
 }
@@ -70,7 +72,7 @@ eval_PCA <- function(dge.set, meta, cols_of_interest, prefix, suffix) {
 # Distance Heatmap ------------------------------------------------------------
 
 eval_heatmap <- function(norm_counts, meta, meta_cols, prefix, suffix) {
-  xy_dim <- max(dim(meta)[1]*0.15, 7)
+  xy_dim <- max(dim(meta)[1]*0.05, 5)
   sampleDists <- dist(t(norm_counts))
   sampleDistMatrix <- as.matrix(sampleDists)
   colnames(sampleDistMatrix) <- meta$counts_col 
@@ -80,16 +82,23 @@ eval_heatmap <- function(norm_counts, meta, meta_cols, prefix, suffix) {
   for (fmt in c("png", "svg")) {
     if (fmt == "png") {
       pngfig(str_c(prefix, "Heatmap_1_", suffix), xy_dim, xy_dim)
+      pheatmap(sampleDistMatrix,
+        clustering_distance_rows = sampleDists,
+        clustering_distance_cols = sampleDists,
+        # col = colors,
+        main = paste0(suffix, ": Euclidean distance between counts of samples on fitted data.")
+      )
+      w()
     } else {
       svgfig(str_c(prefix, "Heatmap_1_", suffix), xy_dim, xy_dim)
+      pheatmap(sampleDistMatrix,
+        clustering_distance_rows = sampleDists,
+        clustering_distance_cols = sampleDists,
+        # col = colors,
+        main = paste0(suffix, ": Euclidean distance between counts of samples on fitted data.")
+      )
+      w()
     }
-    pheatmap(sampleDistMatrix,
-      clustering_distance_rows = sampleDists,
-      clustering_distance_cols = sampleDists,
-      col = colors,
-      main = paste0(suffix, ": Euclidean distance between counts of samples on fitted data.")
-    )
-    w()
   }
   # Sort the column and row names
   sorted_col_order <- order(colnames(sampleDistMatrix))
@@ -112,9 +121,9 @@ eval_heatmap <- function(norm_counts, meta, meta_cols, prefix, suffix) {
 
 # Gene Clustering -------------------------------------------------------------
 eval_gene_clusters <- function(norm_counts, meta, meta_cols, prefix, suffix) {
-  x_dim <- max(dim(meta)[1]*0.18, 10)
+  x_dim <- max(dim(meta)[1]*0.18, 7)
   k_genes <- max(dim(meta)[1]*0.7, 50)
-  y_dim <- k_genes * 0.23
+  y_dim <- k_genes * 0.21
   for (i in 1:1) {
     topVarGenes <- head(order(rowVars(norm_counts), decreasing = TRUE), k_genes)
     mat <- norm_counts[topVarGenes, ]
@@ -283,8 +292,8 @@ pngfig <- function(filename, width=7, height=7) {
 }
 
 svgfig <- function(filename, width=7, height=7) {
-  w <- width*90
-  h <- height*90
+  w <- width*2
+  h <- height*2
   f_svg <- str_c(filename, ".svg")
   print(str_c("Outputting: ", f_svg, " as SVG, ", w, "x", h))
   svg(f_svg, width=w, height=h)
