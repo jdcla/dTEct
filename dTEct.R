@@ -219,15 +219,15 @@ evaluate_combination_contrast <- function(meta, tup, contrast_col, fit, outdir, 
     rna_grp_mask <- grp_mask & rna_mask
     n_rna[[i]] <- sum(rna_grp_mask)
     if (sum(ribo_grp_mask) != 0) {
-      ribo_vals <- unique(meta[ribo_grp_mask, tmp_col])
-      weight_dict_ribo <- as.list(table(meta[ribo_grp_mask, tmp_col])/sum(ribo_grp_mask))
-      grp_ribo[[i]] <- construct_contrast_string(ribo_vals[[tmp_col]], "Ribo", meta, weight_dict_ribo)
+      ribo_vals <- unique(meta[ribo_grp_mask, contrast_col])
+      weight_dict_ribo <- as.list(table(meta[ribo_grp_mask, contrast_col])/sum(ribo_grp_mask))
+      grp_ribo[[i]] <- construct_contrast_string(ribo_vals[[contrast_col]], "Ribo", meta, weight_dict_ribo)
       order[[i]] <- sum(meta[ribo_grp_mask, "control"] == "test")
     }
     if (sum(rna_grp_mask) != 0) {
-      rna_vals <- unique(meta[rna_grp_mask, tmp_col])
-      weight_dict_rna <- as.list(table(meta[rna_grp_mask, tmp_col])/sum(rna_grp_mask))
-      grp_rna[[i]] <- construct_contrast_string(rna_vals[[tmp_col]], "RNA", meta, weight_dict_rna)
+      rna_vals <- unique(meta[rna_grp_mask, contrast_col])
+      weight_dict_rna <- as.list(table(meta[rna_grp_mask, contrast_col])/sum(rna_grp_mask))
+      grp_rna[[i]] <- construct_contrast_string(rna_vals[[contrast_col]], "RNA", meta, weight_dict_rna)
       order[[i]] <- sum(meta[rna_grp_mask, "control"] == "test")
     }
   }
@@ -469,6 +469,18 @@ option_list <- list(
 
 opt_parser <- OptionParser(option_list=option_list)
 opt        <- parse_args(opt_parser)
+
+## DEBUG
+# opt$metadata <- "sample_sheet.csv"
+# opt$rna_counts <- "rna/gene_agg_NumReads.csv"
+# opt$ribo_counts <- "ribo/gene_agg_NumReads.csv"
+# opt$count_col <- 5
+# opt$sep <- ","
+# opt$tx_table <- "tx_table.csv"
+# opt$cores <- 1
+# opt$no_batch_factor <- TRUE
+# opt$contrast_cols <- "disease_id"
+# opt$outdir <- "test/"
 
 ### DEBUGING ### 
 # opt$metadata <- "sample_sheet.csv"
@@ -771,7 +783,7 @@ cat("Combinations and unique entries for each column:\n", file = log_file, appen
 for (col in names(comb_dict)) {
   cat(str_c(col, ":\n"), file = log_file, append = TRUE)
   cat(paste0(" - ", paste(comb_dict[[col]], collapse = "\n - ")), "\n", file = log_file, append = TRUE)
-  cat(str_c("Unique entries: ", paste(uniq_dict[[col]], collapse = ", ")), "\n", file = log_file, append = TRUE)
+  cat(str_c("Value counts: ", paste(names(table(meta.table[[col]])), table(meta.table[[col]]), sep = "=", collapse = ", ")), "\n", file = log_file, append = TRUE)
 }
 # TODO: validate presence of both data types
 # Report on sample_ids filtered out because of missing data
@@ -855,10 +867,14 @@ if (!opt$no_batch_factor && length(unique(meta.samples$batch_date)) > 1 && abs(c
   # meta.samples$batch_date <- as.character(meta.samples$batch_date)
   # meta.samples$batch_date[meta.samples$batch_date %in% single_batches] <- "NaN"
   # meta.samples$batch_date <- as.factor(meta.samples$batch_date)
+  cat("batch_date:\n", file = log_file, append = TRUE)
+  cat(str_c("Value counts: ", paste(names(table(meta.table[["batch_date"]])), table(meta.table[["batch_date"]]), sep = "=", collapse = ", ")), "\n", file = log_file, append = TRUE)
   select_cols <- c(select_cols, "batch_date")
   f = paste0(f, " + batch_date")
 }
 if (length(unique(meta.samples$sample_type)) > 1) {
+  cat("sample_type:\n", file = log_file, append = TRUE)
+  cat(str_c("Value counts: ", paste(names(table(meta.table[["sample_type"]])), table(meta.table[["sample_type"]]), sep = "=", collapse = ", ")), "\n", file = log_file, append = TRUE)
   select_cols <- c(select_cols, "sample_type")
   f = paste0(f, " + sample_type")
 }
@@ -871,6 +887,11 @@ meta.design <- (
   |> column_to_rownames("counts_col")
 )
 
+## DEBUG ##
+## Filter out rows without disease type MBL or CTRL
+# meta.design <- meta.design |> filter(grepl("MBL|PINE", meta.design$disease_id))
+# meta.samples <- meta.samples |> filter(grepl("MBL|PINE", meta.samples$disease_id))
+
 # Rearrage counts according to meta.samples file
 counts <- counts[,as.character(meta.samples$counts_col)]
 
@@ -882,16 +903,19 @@ write(f, file = str_c(opt$outdir, "formula.txt"))
 cat("\ngroup names:\n", colnames(design), "\n", file=log_file, append=TRUE)
 cat("\nformula:\n", f, "\n", file=log_file, append=TRUE)
 
+dim(counts)
 ############### DEBUG
 # counts_test <- counts[,]
 # meta_test <- meta.design
 # meta_test$batch_date <- meta_test$batch
 
-# design <- model.marix(as.formula(f), data=data.frame(meta_test))
+# design <- model.matrix(as.formula(f), data=data.frame(meta_test))
 # # Compute the correlation matrix
 # corr_matrix <- cor(design)
 # # Find columns with high correlation
+# print(corr_matrix)
 # corr_indices <- which(abs(corr_matrix) > 0.9, arr.ind = TRUE)
+# print(corr_indices)
 # high_corr_indices <- corr_indices[corr_indices[, "row"] < corr_indices[, "col"], ]
 # print(high_corr_indices)
 
@@ -957,6 +981,18 @@ for (i in seq_along(seq_labels)) {
   eval_heatmap(cpm(dge[,samples_to_keep], normalized.lib.sizes = TRUE, log = TRUE, prior.count = 1), dge.meta[sample_mask,], meta_of_interest, opt$outdir, seq_labels[i])
   eval_gene_clusters(cpm(dge[,samples_to_keep], normalized.lib.sizes = TRUE, log = TRUE, prior.count = 1), dge.meta[sample_mask,], meta_of_interest, opt$outdir, seq_labels[i])
 }
+
+## DEBUG  filter non-MBL disease_ids
+# filtered_dict <- uniq_dict$disease_id[grep("MBL|PINE", uniq_dict$disease_id)]
+# bplapply(filtered_dict, function(val) {evaluate_unique_contrast(dge.meta, val, contrast_col, fit, opt$outdir, log_file)})
+
+# # filter comb_dict for MBL and PINE only, comb_dict is a list of lists
+# filtered_dict <- Filter(function(x) all(grepl("MBL.|PINE", x)), comb_dict$disease_id)
+# # append tuple ("MBL", "PINE") if not already present
+# if (!any(sapply(filtered_dict, function(x) all(sort(x) == c("MBL", "PINE"))))) {
+#   filtered_dict <- append(filtered_dict, list(c("MBL", "PINE")))
+# } 
+# bplapply(filtered_dict, function(val) {evaluate_combination_contrast(dge.meta, val, contrast_col, fit, opt$outdir, log_file)})
 
 bplapply(uniq_dict[[contrast_col]], function(val) {evaluate_unique_contrast(dge.meta, val, contrast_col, fit, opt$outdir, log_file)})
 bplapply(comb_dict[[contrast_col]], function(val) {evaluate_combination_contrast(dge.meta, val, contrast_col, fit, opt$outdir, log_file)})
