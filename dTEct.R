@@ -35,10 +35,11 @@ eval_MDS <- function(dge.set, meta, cols_of_interest, prefix, suffix) {
       geom_text(aes(label = meta$rep), size=4, color = "black") +
       xlab(paste0("PC1: ", percentVar[1], "% variance explained")) +
       ylab(paste0("PC2: ", percentVar[2], "% variance explained")) +
-      ggtitle(paste0("MDS on fitted ", suffix, " data (all counts/edgeR)"))
+      ggtitle(paste0("MDS on fitted ", suffix, " data (all counts/edgeR)")) +
+      labs(color = col, shape="replicate")
     gfig(plot, str_c(prefix, "MDS_", i, "_", suffix), xy_dim, xy_dim)
+    }
   }
-}
 
 # PCA -------------------------------------------------------------------------
 eval_PCA <- function(dge.set, meta, cols_of_interest, prefix, suffix) {
@@ -62,7 +63,8 @@ eval_PCA <- function(dge.set, meta, cols_of_interest, prefix, suffix) {
       geom_text(aes(label = meta$rep), size=4, color = "black") +
       xlab(paste0("PC1: ", percentVar[1], "% variance explained")) +
       ylab(paste0("PC2: ", percentVar[2], "% variance explained")) +
-      ggtitle(paste0(suffix, ": PCA on fitted data (all counts/edgeR)"))
+      ggtitle(paste0(suffix, ": PCA on fitted data (all counts/edgeR)")) +
+      labs(color = col, shape="replicate")
     gfig(plot, str_c(prefix, "PCA_", i, "_", suffix), xy_dim, xy_dim)
   }
 }
@@ -70,7 +72,7 @@ eval_PCA <- function(dge.set, meta, cols_of_interest, prefix, suffix) {
 # Distance Heatmap ------------------------------------------------------------
 
 eval_heatmap <- function(norm_counts, meta, meta_cols, prefix, suffix) {
-  xy_dim <- max(dim(meta)[1]*0.15, 7)
+  xy_dim <- max(dim(meta)[1]*0.05, 5)
   sampleDists <- dist(t(norm_counts))
   sampleDistMatrix <- as.matrix(sampleDists)
   colnames(sampleDistMatrix) <- meta$counts_col 
@@ -80,16 +82,23 @@ eval_heatmap <- function(norm_counts, meta, meta_cols, prefix, suffix) {
   for (fmt in c("png", "svg")) {
     if (fmt == "png") {
       pngfig(str_c(prefix, "Heatmap_1_", suffix), xy_dim, xy_dim)
+      pheatmap(sampleDistMatrix,
+        clustering_distance_rows = sampleDists,
+        clustering_distance_cols = sampleDists,
+        # col = colors,
+        main = paste0(suffix, ": Euclidean distance between counts of samples on fitted data.")
+      )
+      w()
     } else {
       svgfig(str_c(prefix, "Heatmap_1_", suffix), xy_dim, xy_dim)
+      pheatmap(sampleDistMatrix,
+        clustering_distance_rows = sampleDists,
+        clustering_distance_cols = sampleDists,
+        # col = colors,
+        main = paste0(suffix, ": Euclidean distance between counts of samples on fitted data.")
+      )
+      w()
     }
-    pheatmap(sampleDistMatrix,
-      clustering_distance_rows = sampleDists,
-      clustering_distance_cols = sampleDists,
-      col = colors,
-      main = paste0(suffix, ": Euclidean distance between counts of samples on fitted data.")
-    )
-    w()
   }
   # Sort the column and row names
   sorted_col_order <- order(colnames(sampleDistMatrix))
@@ -112,9 +121,9 @@ eval_heatmap <- function(norm_counts, meta, meta_cols, prefix, suffix) {
 
 # Gene Clustering -------------------------------------------------------------
 eval_gene_clusters <- function(norm_counts, meta, meta_cols, prefix, suffix) {
-  x_dim <- max(dim(meta)[1]*0.18, 10)
+  x_dim <- max(dim(meta)[1]*0.18, 7)
   k_genes <- max(dim(meta)[1]*0.7, 50)
-  y_dim <- k_genes * 0.23
+  y_dim <- k_genes * 0.21
   for (i in 1:1) {
     topVarGenes <- head(order(rowVars(norm_counts), decreasing = TRUE), k_genes)
     mat <- norm_counts[topVarGenes, ]
@@ -126,9 +135,9 @@ eval_gene_clusters <- function(norm_counts, meta, meta_cols, prefix, suffix) {
     }
     for (fmt in c("png", "svg")) {
       if (fmt == "png") {
-        pngfig(str_c(prefix, "Heatmap_1_", suffix), x_dim, y_dim)
+        pngfig(str_c(prefix, "GeneClusters_1_", suffix), x_dim, y_dim)
       } else {
-        svgfig(str_c(prefix, "Heatmap_1_", suffix), x_dim, y_dim)
+        svgfig(str_c(prefix, "GeneClusters_1_", suffix), x_dim, y_dim)
       }
       pheatmap(mat, annotation_col = anno, main=suffix)
       w()
@@ -188,6 +197,7 @@ evaluate_combination_contrast <- function(meta, tup, contrast_col, fit, outdir, 
   n_rna <- list()
   n_ribo <- list()
   order <- list()
+
   for (i in seq_along(tup)) {
     num_dots <- str_count(tup[[i]], "\\.") + 1
     # Take into account combinatorial groups
@@ -209,15 +219,15 @@ evaluate_combination_contrast <- function(meta, tup, contrast_col, fit, outdir, 
     rna_grp_mask <- grp_mask & rna_mask
     n_rna[[i]] <- sum(rna_grp_mask)
     if (sum(ribo_grp_mask) != 0) {
-      ribo_vals <- unique(meta[ribo_grp_mask, col])
-      weight_dict_ribo <- as.list(table(meta[ribo_grp_mask, col])/sum(ribo_grp_mask))
-      grp_ribo[[i]] <- construct_contrast_string(ribo_vals[[col]], "Ribo", meta, weight_dict_ribo)
+      ribo_vals <- unique(meta[ribo_grp_mask, contrast_col])
+      weight_dict_ribo <- as.list(table(meta[ribo_grp_mask, contrast_col])/sum(ribo_grp_mask))
+      grp_ribo[[i]] <- construct_contrast_string(ribo_vals[[contrast_col]], "Ribo", meta, weight_dict_ribo)
       order[[i]] <- sum(meta[ribo_grp_mask, "control"] == "test")
     }
     if (sum(rna_grp_mask) != 0) {
-      rna_vals <- unique(meta[rna_grp_mask, col])
-      weight_dict_rna <- as.list(table(meta[rna_grp_mask, col])/sum(rna_grp_mask))
-      grp_rna[[i]] <- construct_contrast_string(rna_vals[[col]], "RNA", meta, weight_dict_rna)
+      rna_vals <- unique(meta[rna_grp_mask, contrast_col])
+      weight_dict_rna <- as.list(table(meta[rna_grp_mask, contrast_col])/sum(rna_grp_mask))
+      grp_rna[[i]] <- construct_contrast_string(rna_vals[[contrast_col]], "RNA", meta, weight_dict_rna)
       order[[i]] <- sum(meta[rna_grp_mask, "control"] == "test")
     }
   }
@@ -282,8 +292,8 @@ pngfig <- function(filename, width=7, height=7) {
 }
 
 svgfig <- function(filename, width=7, height=7) {
-  w <- width*90
-  h <- height*90
+  w <- width*2
+  h <- height*2
   f_svg <- str_c(filename, ".svg")
   print(str_c("Outputting: ", f_svg, " as SVG, ", w, "x", h))
   svg(f_svg, width=w, height=h)
@@ -447,10 +457,11 @@ option_list <- list(
     make_option(c("-c", "--count_col"     ), type="integer"  , default=2                    , metavar="integer", help="First column containing sample count data."                                             ),
     make_option(c("-t", "--tx_table"      ), type="character", default=NULL                   , metavar="path",    help="Table linking transcript and gene IDs/names"                                          ),
     make_option(c("-f", "--tx_table_col"  ), type="character",  default="gene_id"        , metavar="string" , help="column name of tx_table to use as keys"                                                    ),
+    make_option(c("-r", "--orf_tx_table"  ), type="character", default=NULL                   , metavar="path",    help="Table linking ORF and transcript IDs"                                          ),
     make_option(c("-d", "--id_col"        ), type="integer"  , default=1                    , metavar="integer", help="Column containing identifiers to be used."                                              ),
     make_option(c("-s", "--sep"           ), type="character", default=','                  , metavar="string" , help="Separator of input table."                                              ),
     make_option(c("-o", "--outdir"        ), type="character", default='out', metavar="path"   , help="Output directory."                                                                      ),
-    make_option(c("-v", "--vst"           ), type="logical"  , default=FALSE                , metavar="boolean", help="Run vst transform instead of rlog."                                                     ),
+    make_option(c("-u", "--outer_join"    ), type="logical"  , default=FALSE                , metavar="boolean", help="Outer join RNA and Ribo reads, fill NAs with 0 expression."                                                     ),
     make_option(c("-l", "--cores"         ), type="integer"  , default=1                    , metavar="integer", help="Number of cores."                                                                       ),
     make_option(c("-a", "--contrast_cols" ), type="character", default="treatment_id"               , metavar="character", help="Column names from which contrasts are derived; separated by commas."          ),
     make_option(c("-e", "--no_batch_factor"), type="logical" , default=FALSE,               , metavar="boolean", help="Don't create factors for batch date. Can be necessary to achieve full rank for some settings")
@@ -459,16 +470,29 @@ option_list <- list(
 opt_parser <- OptionParser(option_list=option_list)
 opt        <- parse_args(opt_parser)
 
+## DEBUG
+# opt$metadata <- "sample_sheet.csv"
+# opt$rna_counts <- "rna/gene_agg_NumReads.csv"
+# opt$ribo_counts <- "ribo/gene_agg_NumReads.csv"
+# opt$count_col <- 5
+# opt$sep <- ","
+# opt$tx_table <- "tx_table.csv"
+# opt$cores <- 1
+# opt$no_batch_factor <- TRUE
+# opt$contrast_cols <- "disease_id"
+# opt$outdir <- "test/"
+
 ### DEBUGING ### 
 # opt$metadata <- "sample_sheet.csv"
-# opt$rna_counts <- "out/rna/quants/salmon.STD_TS.NA/gene_agg_NumReads_matrix.csv"
-# opt$ribo_counts <- "out/ribo/quants/salmon.STD_TS.STD_TL/gene_agg_NumReads_matrix.csv"
+# opt$rna_counts <- "out/rna/quants/salmon.STD_TS.NA/no_agg_NumReads_matrix.csv"
+# opt$ribo_counts <- "out/ribo/quants/salmon.STD_TS.STD_TL/no_agg_NumReads_matrix.csv"
 # opt$count_col <- 5
 # opt$sep <- ","
 # opt$outdir <- "test/"
 # opt$tx_table <- "out/targets/STD_TS/STD_TL/tx_table.csv"
-# opt$contrast_cols <- "source_id,treatment_id"
+# opt$contrast_cols <- "disease_id"
 # opt$cores <- 4
+# opt$no_batch_factor <- TRUE
 
 # Multi-core processing
 register(MulticoreParam(opt$cores))
@@ -512,6 +536,7 @@ if (!is.null(opt$ribo_counts)) {
   print(str_c("Ribo counts columns: ", paste(colnames(ribo_counts), collapse = ", ")))
   # Log the number of rows and columns in ribo_counts
   cat("Ribo counts matrix dimensions: ", nrow(ribo_counts), " rows, ", ncol(ribo_counts), " columns\n", file = log_file, append = TRUE)
+  ribo_ids <- rownames(ribo_counts)
 }
 if (!is.null(opt$rna_counts)) {
   rna_counts <- read.csv(
@@ -533,6 +558,7 @@ if (!is.null(opt$rna_counts)) {
   print(str_c("RNA counts columns: ", paste(colnames(rna_counts), collapse = ", ")))
   # Log the number of rows and columns in rna_counts
   cat("RNA counts matrix dimensions: ", nrow(rna_counts), " rows, ", ncol(rna_counts), " columns\n", file = log_file, append = TRUE)
+  rna_ids <- rownames(rna_counts)
 }
 
 if (!is.null(opt$tx_table)) {
@@ -550,7 +576,8 @@ if (!is.null(opt$tx_table)) {
           else .
       }
       |> mutate(
-          name = if_else(name == "N/A", id, name),)
+            name = if_else(is.na(name) | name == "" | is.nan(name), id, name),
+          )
   )
 } else {
   # Create dummy feature2name table from unique rownames of both ribo_counts and rna_counts
@@ -572,36 +599,44 @@ if (!is.null(opt$tx_table)) {
   }
 }
 
+# Create CDS - transcript map
+if (is.null(opt$orf_tx_table) || opt$tx_table_col == "gene_id") {
+  ribo_rna_map <- data.frame(
+    ORF_id = rownames(ribo_counts),
+    transcript_id = rownames(ribo_counts)
+  )
+} else {
+  ribo_rna_map <- read.csv(opt$orf_tx_table, sep = ",", header = TRUE)
+  print(colnames(ribo_rna_map))
+}
+ribo_rna_map <- ribo_rna_map %>% tibble::column_to_rownames("ORF_id")
+
 # Create dirs
-dir.create(paste0(opt$out, 'dTE'), showWarnings = FALSE, recursive = TRUE)
-dir.create(paste0(opt$out, 'Ribo'), showWarnings = FALSE, recursive = TRUE)
-dir.create(paste0(opt$out, 'RNA'), showWarnings = FALSE, recursive = TRUE)
-dir.create(paste0(opt$out, 'TE'), showWarnings = FALSE, recursive = TRUE)
+dir.create(paste0(opt$outdir, 'dTE'), showWarnings = FALSE, recursive = TRUE)
+dir.create(paste0(opt$outdir, 'Ribo'), showWarnings = FALSE, recursive = TRUE)
+dir.create(paste0(opt$outdir, 'RNA'), showWarnings = FALSE, recursive = TRUE)
+dir.create(paste0(opt$outdir, 'TE'), showWarnings = FALSE, recursive = TRUE)
 
 # Intersect RNA and Ribo counts -------------------------------------------------
 ## canonical sequences
+
 if (!is.null(opt$rna_counts) && !is.null(opt$ribo_counts)) {
-  common_genes <- intersect(rownames(rna_counts), rownames(ribo_counts))
-  ribo_counts_select <- ribo_counts[common_genes,]
-  rna_counts_select <- rna_counts[common_genes,]
-  ## non-canonical sequences
-  ORF_ids <- setdiff(rownames(ribo_counts), rownames(rna_counts))
-  if (length(ORF_ids) > 0) {
-    transcript_ids <- sapply(strsplit(ORF_ids, "_"), `[`, 1)
-    ribo_counts_ORF <- ribo_counts[ORF_ids,]
-    rna_counts_ORF <- rna_counts[transcript_ids,]
-    rownames(rna_counts_ORF) <- ORF_ids
-    ribo_counts_select <- rbind(ribo_counts_select, ribo_counts_ORF)
-    rna_counts_select <- rbind(rna_counts_select, rna_counts_ORF)
+  if (opt$outer_join) {
+    print("FUNCTION IS NOT YET PROPERLY IMPLEMENTED")
+    # Outer join: union of all rownames, fill missing with 0
+    all_genes <- union(rownames(rna_counts), ribo_rna_map[rownames(ribo_counts),])
+    ribo_counts_select <- ribo_counts[all_genes, , drop=FALSE]
+    rna_counts_select <- rna_counts[all_genes, , drop=FALSE]
+    # Fill NAs with 0
+    ribo_counts_select[is.na(ribo_counts_select)] <- 0
+    rna_counts_select[is.na(rna_counts_select)] <- 0
+  } else {
+    # Intersect (default)
+    # Find transcripts and ORF counts with overlapping Names
+    ribo_counts_select <- ribo_counts
+    rna_counts_select <- rna_counts[ribo_rna_map[rownames(ribo_counts),],]
   }
-  # Create data object
   counts <- cbind(RNA=as.matrix(rna_counts_select), Ribo=as.matrix(ribo_counts_select))
-  # Ensure columns to be of same type
-  # for (col in c("experimental_type")) {
-  #   meta.rna[[col]] <- as.character(meta.rna[[col]])
-  #   meta.ribo[[col]] <- as.character(meta.ribo[[col]])
-  # }
-  # meta.table <- bind_rows(meta.rna, meta.ribo)
   seq_types <- c("RNA", "Ribo")
   out_dirs <- c(dirname(opt$rna_counts), dirname(opt$ribo_counts))
 } else if (!is.null(opt$rna_counts)) {
@@ -748,7 +783,7 @@ cat("Combinations and unique entries for each column:\n", file = log_file, appen
 for (col in names(comb_dict)) {
   cat(str_c(col, ":\n"), file = log_file, append = TRUE)
   cat(paste0(" - ", paste(comb_dict[[col]], collapse = "\n - ")), "\n", file = log_file, append = TRUE)
-  cat(str_c("Unique entries: ", paste(uniq_dict[[col]], collapse = ", ")), "\n", file = log_file, append = TRUE)
+  cat(str_c("Value counts: ", paste(names(table(meta.table[[col]])), table(meta.table[[col]]), sep = "=", collapse = ", ")), "\n", file = log_file, append = TRUE)
 }
 # TODO: validate presence of both data types
 # Report on sample_ids filtered out because of missing data
@@ -806,6 +841,20 @@ for (col in temp) {
 }
 contrast_cols <- unlist(contrast_cols)
 select_cols <- c("counts_col", contrast_cols, "seq_type")
+# evaluate location_id, source_id, disease_id, treatment_id
+common_cols <- c("source_id", "location_id", "disease_id", "treatment_id")
+# exclude contrast_cols
+common_cols <- common_cols[!common_cols %in% contrast_cols]
+# include to selected columns if more than one unique value
+for (col in common_cols) {
+  if (col %in% colnames(meta.samples)) {
+    if (length(unique(meta.samples[[col]])) > 1) {
+      select_cols <- c(select_cols, col)
+    }
+  }
+}
+
+
 # ensure batch_date and seq_type are not perfectly correlated
 corr_factor <- suppressWarnings({
   cf <- cor(as.numeric(meta.samples$seq_type), as.numeric(meta.samples$batch_date))
@@ -818,10 +867,14 @@ if (!opt$no_batch_factor && length(unique(meta.samples$batch_date)) > 1 && abs(c
   # meta.samples$batch_date <- as.character(meta.samples$batch_date)
   # meta.samples$batch_date[meta.samples$batch_date %in% single_batches] <- "NaN"
   # meta.samples$batch_date <- as.factor(meta.samples$batch_date)
+  cat("batch_date:\n", file = log_file, append = TRUE)
+  cat(str_c("Value counts: ", paste(names(table(meta.table[["batch_date"]])), table(meta.table[["batch_date"]]), sep = "=", collapse = ", ")), "\n", file = log_file, append = TRUE)
   select_cols <- c(select_cols, "batch_date")
   f = paste0(f, " + batch_date")
 }
 if (length(unique(meta.samples$sample_type)) > 1) {
+  cat("sample_type:\n", file = log_file, append = TRUE)
+  cat(str_c("Value counts: ", paste(names(table(meta.table[["sample_type"]])), table(meta.table[["sample_type"]]), sep = "=", collapse = ", ")), "\n", file = log_file, append = TRUE)
   select_cols <- c(select_cols, "sample_type")
   f = paste0(f, " + sample_type")
 }
@@ -834,6 +887,11 @@ meta.design <- (
   |> column_to_rownames("counts_col")
 )
 
+## DEBUG ##
+## Filter out rows without disease type MBL or CTRL
+# meta.design <- meta.design |> filter(grepl("MBL|PINE", meta.design$disease_id))
+# meta.samples <- meta.samples |> filter(grepl("MBL|PINE", meta.samples$disease_id))
+
 # Rearrage counts according to meta.samples file
 counts <- counts[,as.character(meta.samples$counts_col)]
 
@@ -845,16 +903,19 @@ write(f, file = str_c(opt$outdir, "formula.txt"))
 cat("\ngroup names:\n", colnames(design), "\n", file=log_file, append=TRUE)
 cat("\nformula:\n", f, "\n", file=log_file, append=TRUE)
 
+dim(counts)
 ############### DEBUG
 # counts_test <- counts[,]
 # meta_test <- meta.design
 # meta_test$batch_date <- meta_test$batch
 
-# design <- model.marix(as.formula(f), data=data.frame(meta_test))
+# design <- model.matrix(as.formula(f), data=data.frame(meta_test))
 # # Compute the correlation matrix
 # corr_matrix <- cor(design)
 # # Find columns with high correlation
+# print(corr_matrix)
 # corr_indices <- which(abs(corr_matrix) > 0.9, arr.ind = TRUE)
+# print(corr_indices)
 # high_corr_indices <- corr_indices[corr_indices[, "row"] < corr_indices[, "col"], ]
 # print(high_corr_indices)
 
@@ -908,6 +969,7 @@ if (length(seq_types) == 2) {
   seq_labels <- seq_types
   seq_groups <- seq_types
 }
+
 # Evaluate design to get metadata of interest
 meta_of_interest <- colnames(meta.design)[!colnames(meta.design) %in% c("group", "seq_type")]
 meta_of_interest <- c(contrast_grps, meta_of_interest)
@@ -920,6 +982,17 @@ for (i in seq_along(seq_labels)) {
   eval_gene_clusters(cpm(dge[,samples_to_keep], normalized.lib.sizes = TRUE, log = TRUE, prior.count = 1), dge.meta[sample_mask,], meta_of_interest, opt$outdir, seq_labels[i])
 }
 
-outdir <- opt$outdir
-bplapply(uniq_dict[[contrast_col]], function(val) {evaluate_unique_contrast(dge.meta, val, contrast_col, fit, outdir, log_file)})
-bplapply(comb_dict[[contrast_col]], function(val) {evaluate_combination_contrast(dge.meta, val, contrast_col, fit, outdir, log_file)})
+## DEBUG  filter non-MBL disease_ids
+# filtered_dict <- uniq_dict$disease_id[grep("MBL|PINE", uniq_dict$disease_id)]
+# bplapply(filtered_dict, function(val) {evaluate_unique_contrast(dge.meta, val, contrast_col, fit, opt$outdir, log_file)})
+
+# # filter comb_dict for MBL and PINE only, comb_dict is a list of lists
+# filtered_dict <- Filter(function(x) all(grepl("MBL.|PINE", x)), comb_dict$disease_id)
+# # append tuple ("MBL", "PINE") if not already present
+# if (!any(sapply(filtered_dict, function(x) all(sort(x) == c("MBL", "PINE"))))) {
+#   filtered_dict <- append(filtered_dict, list(c("MBL", "PINE")))
+# } 
+# bplapply(filtered_dict, function(val) {evaluate_combination_contrast(dge.meta, val, contrast_col, fit, opt$outdir, log_file)})
+
+bplapply(uniq_dict[[contrast_col]], function(val) {evaluate_unique_contrast(dge.meta, val, contrast_col, fit, opt$outdir, log_file)})
+bplapply(comb_dict[[contrast_col]], function(val) {evaluate_combination_contrast(dge.meta, val, contrast_col, fit, opt$outdir, log_file)})
