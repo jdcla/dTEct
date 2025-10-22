@@ -613,7 +613,8 @@ if (is.null(opt$orf_tx_table) || opt$tx_table_col == "gene_id") {
 }
 ribo_rna_map <- ribo_rna_map %>% tibble::column_to_rownames("ORF_id")
 
-# Create dirs
+# Check whether outdir exists and create it
+dir.create(opt$outdir, showWarnings = FALSE, recursive = TRUE)
 dir.create(paste0(opt$outdir, 'dTE'), showWarnings = FALSE, recursive = TRUE)
 dir.create(paste0(opt$outdir, 'Ribo'), showWarnings = FALSE, recursive = TRUE)
 dir.create(paste0(opt$outdir, 'RNA'), showWarnings = FALSE, recursive = TRUE)
