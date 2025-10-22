@@ -501,6 +501,8 @@ register(MulticoreParam(opt$cores))
 # Parsing multi-group contrasts
 contrast_grps <- parse_groups(opt$contrast_cols)
 contrast_col <- paste0(contrast_grps, collapse="__")
+# Check whether outdir exists and create it
+dir.create(opt$outdir, showWarnings = FALSE, recursive = TRUE)
 # Define the path to the log file
 log_file <- paste0(opt$outdir, "run_info.txt")
 # Clear existing content of the log file at the start of the script
@@ -613,8 +615,6 @@ if (is.null(opt$orf_tx_table) || opt$tx_table_col == "gene_id") {
 }
 ribo_rna_map <- ribo_rna_map %>% tibble::column_to_rownames("ORF_id")
 
-# Check whether outdir exists and create it
-dir.create(opt$outdir, showWarnings = FALSE, recursive = TRUE)
 dir.create(paste0(opt$outdir, 'dTE'), showWarnings = FALSE, recursive = TRUE)
 dir.create(paste0(opt$outdir, 'Ribo'), showWarnings = FALSE, recursive = TRUE)
 dir.create(paste0(opt$outdir, 'RNA'), showWarnings = FALSE, recursive = TRUE)
