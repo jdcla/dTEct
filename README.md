@@ -23,7 +23,7 @@ This script is designed to run in an R environment. You will need the following 
 
 The easiest use of this script is by running the singularity container present on the turbo share, on any UM Linux system:
 ```bash
-singularity exec /nfs/turbo/umms-prensnerturbo/shared/workflows/singularities/DE_tools.sif dTE.R <function flags>
+singularity exec /nfs/turbo/umms-prensnerturbo/shared/workflows/singularities/DE_tools.sif dTEct.R <function flags>
 ```
 
 Alternatively, you can install all required packages by running the following commands in your R console:
@@ -92,12 +92,13 @@ Clone or download the repository. The example files should be located in the `ex
 Open your terminal or command prompt, navigate to the script's directory, and execute the following command:
 
 ```bash
-Rscript dTE.R \
+Rscript dTEct.R \
     --metadata example/metadata.csv \
     --rna_counts example/rna_numreads.csv \
     --ribo_counts example/ribo_numreads.csv \
     --tx_table example/tx_table.csv \
-    --outdir example_out/ \
+    --outdir example/out/ \
+    --count_col 5 \
     --contrast_cols "source_id,treatment_id" \
     --cores 4
 ```
