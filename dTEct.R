@@ -164,10 +164,10 @@ evaluate_unique_contrast <- function(meta, uniq_val, contrast_col, fit, outdir, 
   } else {
     uniq_mask <- meta[[tmp_col]] == uniq_val
   }
-  ribo_grp_mask <- uniq_mask & ribo_mask
   rna_grp_mask <- uniq_mask & rna_mask
-  n_rna <- sum(ribo_grp_mask)
-  n_ribo <- sum(rna_grp_mask)
+  ribo_grp_mask <- uniq_mask & ribo_mask
+  n_rna <- sum(rna_grp_mask)
+  n_ribo <- sum(ribo_grp_mask)
   if (sum(ribo_grp_mask) != 0 && sum(rna_grp_mask) != 0) {
     ribo_vals <- unique(meta[ribo_grp_mask, contrast_col])
     # Weigh factors according to contribution to supergroup
@@ -190,8 +190,8 @@ evaluate_unique_contrast <- function(meta, uniq_val, contrast_col, fit, outdir, 
 }
 
 evaluate_combination_contrast <- function(meta, tup, contrast_col, fit, outdir, log_file) {
-  ribo_mask <- meta$seq_type == "Ribo"
   rna_mask <- meta$seq_type == "RNA"
+  ribo_mask <- meta$seq_type == "Ribo"
   grp_rna <- list()
   grp_ribo <- list()
   n_rna <- list()
@@ -214,30 +214,32 @@ evaluate_combination_contrast <- function(meta, tup, contrast_col, fit, outdir, 
     } else {
       grp_mask <- meta[[tmp_col]] == tup[[i]]
     }
-    ribo_grp_mask <- grp_mask & ribo_mask
-    n_ribo[[i]] <- sum(ribo_grp_mask)
     rna_grp_mask <- grp_mask & rna_mask
     n_rna[[i]] <- sum(rna_grp_mask)
-    if (sum(ribo_grp_mask) != 0) {
-      ribo_vals <- unique(meta[ribo_grp_mask, contrast_col])
-      weight_dict_ribo <- as.list(table(meta[ribo_grp_mask, contrast_col])/sum(ribo_grp_mask))
-      grp_ribo[[i]] <- construct_contrast_string(ribo_vals[[contrast_col]], "Ribo", meta, weight_dict_ribo)
-      order[[i]] <- sum(meta[ribo_grp_mask, "control"] == "test")
-    }
+    ribo_grp_mask <- grp_mask & ribo_mask
+    n_ribo[[i]] <- sum(ribo_grp_mask)
     if (sum(rna_grp_mask) != 0) {
       rna_vals <- unique(meta[rna_grp_mask, contrast_col])
       weight_dict_rna <- as.list(table(meta[rna_grp_mask, contrast_col])/sum(rna_grp_mask))
       grp_rna[[i]] <- construct_contrast_string(rna_vals[[contrast_col]], "RNA", meta, weight_dict_rna)
       order[[i]] <- sum(meta[rna_grp_mask, "control"] == "test")
     }
+    if (sum(ribo_grp_mask) != 0) {
+      ribo_vals <- unique(meta[ribo_grp_mask, contrast_col])
+      weight_dict_ribo <- as.list(table(meta[ribo_grp_mask, contrast_col])/sum(ribo_grp_mask))
+      grp_ribo[[i]] <- construct_contrast_string(ribo_vals[[contrast_col]], "Ribo", meta, weight_dict_ribo)
+      order[[i]] <- sum(meta[ribo_grp_mask, "control"] == "test")
+    }
   }
   # Switch terms if first term has more "test" hits than second term
   if ((length(order) == 2) && (order[[1]] < order[[2]])) {
-    if (length(grp_ribo) == 2) {
-      grp_ribo <- grp_ribo[c(2, 1)]
-    }
     if (length(grp_rna) == 2) {
       grp_rna <- grp_rna[c(2, 1)]
+      n_rna <- n_rna[c(2, 1)]
+    }
+    if (length(grp_ribo) == 2) {
+      grp_ribo <- grp_ribo[c(2, 1)]
+      n_ribo <- n_ribo[c(2, 1)]
     }
     tup <- tup[c(2, 1)]
   }
