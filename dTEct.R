@@ -603,18 +603,6 @@ if (!is.null(opt$tx_table)) {
   }
 }
 
-# Create CDS - transcript map
-if (is.null(opt$orf_tx_table) || opt$tx_table_col == "gene_id") {
-  ribo_rna_map <- data.frame(
-    ORF_id = rownames(ribo_counts),
-    transcript_id = rownames(ribo_counts)
-  )
-} else {
-  ribo_rna_map <- read.csv(opt$orf_tx_table, sep = ",", header = TRUE)
-  print(colnames(ribo_rna_map))
-}
-ribo_rna_map <- ribo_rna_map %>% tibble::column_to_rownames("ORF_id")
-
 dir.create(paste0(opt$outdir, 'dTE'), showWarnings = FALSE, recursive = TRUE)
 dir.create(paste0(opt$outdir, 'Ribo'), showWarnings = FALSE, recursive = TRUE)
 dir.create(paste0(opt$outdir, 'RNA'), showWarnings = FALSE, recursive = TRUE)
@@ -622,8 +610,19 @@ dir.create(paste0(opt$outdir, 'TE'), showWarnings = FALSE, recursive = TRUE)
 
 # Intersect RNA and Ribo counts -------------------------------------------------
 ## canonical sequences
-
 if (!is.null(opt$rna_counts) && !is.null(opt$ribo_counts)) {
+  # Create CDS - transcript map
+  if (is.null(opt$orf_tx_table) || opt$tx_table_col == "gene_id") {
+    ribo_rna_map <- data.frame(
+      ORF_id = rownames(ribo_counts),
+      transcript_id = rownames(ribo_counts)
+    )
+  } else {
+    ribo_rna_map <- read.csv(opt$orf_tx_table, sep = ",", header = TRUE)
+    print(colnames(ribo_rna_map))
+  }
+  ribo_rna_map <- ribo_rna_map %>% tibble::column_to_rownames("ORF_id")
+
   if (opt$outer_join) {
     print("FUNCTION IS NOT YET PROPERLY IMPLEMENTED")
     # Outer join: union of all rownames, fill missing with 0
