@@ -71,7 +71,7 @@ The pipeline requires up to four types of input files, specified via command-lin
     * **Format:** Identical to the RNA Counts File. The same gene IDs should be used for direct comparison.
 
 
-4.  **OPTIONAL: Transcript-to-Gene Map (`--tx_table`)**
+4.  **OPTIONAL: Transcript-to-Gene Map (`--tx_table_path`)**
     A lookup table to map feature IDs (e.g., gene IDs or transcript IDs) to more readable gene names for plotting.
 
     * **Format:** CSV.
@@ -96,7 +96,7 @@ Rscript dTEct.R \
     --metadata example/metadata.csv \
     --rna_counts example/rna_numreads.csv \
     --ribo_counts example/ribo_numreads.csv \
-    --tx_table example/tx_table.csv \
+    --tx_table_path example/tx_table.csv \
     --outdir example/out/ \
     --count_col 5 \
     --contrast_cols "source_id,treatment_id" \
@@ -133,7 +133,7 @@ This section details the command-line options and the logic behind the automated
 | `-m`, `--metadata`    | path          | `NULL`             | **Required.** Path to the project sample sheet (metadata CSV).                                          |
 | `-i`, `--rna_counts`  | path          | `NULL`             | Path to the RNA-seq count matrix.                                                                       |
 | `-j`, `--ribo_counts` | path          | `NULL`             | Path to the Ribo-seq count matrix.                                                                      |
-| `-t`, `--tx_table`    | path          | `''`               | Path to the table linking transcript and gene IDs/names.                                                |
+| `-t`, `--tx_table_path`    | path          | `''`               | Path to the table linking transcript and gene IDs/names.                                                |
 | `-f`, `--tx_table_col`  | character     | `"gene"`     | The column name of `tx_table` to use as key. Used to find the correct ID in `tx_table`.  |
 | `-a`, `--contrast_cols`| character   | `"treatment_id"`   | Comma-separated metadata column names from which contrasts are derived.                                 |
 | `-c`, `--count_col`   | integer       | `5`                | First column in the count files containing sample count data. *(Note: script logic seems to override this).* |
