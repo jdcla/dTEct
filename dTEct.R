@@ -72,7 +72,7 @@ eval_PCA <- function(dge.set, meta, cols_of_interest, prefix, suffix) {
 # Distance Heatmap ------------------------------------------------------------
 
 eval_heatmap <- function(norm_counts, meta, meta_cols, prefix, suffix) {
-  xy_dim <- max(dim(meta)[1]*0.05, 5)
+  xy_dim <- max(dim(meta)[1]*0.15, 5)
   sampleDists <- dist(t(norm_counts))
   sampleDistMatrix <- as.matrix(sampleDists)
   colnames(sampleDistMatrix) <- meta$counts_col 
@@ -375,7 +375,7 @@ eval_contrast <- function(fit, contrast, out_prefix, title, log_file) {
         |> select(gene_id, gene_name, everything())
     )
     write.csv(res, paste0(out_prefix, ".csv"), quote=FALSE, row.names=FALSE)
-    ymax = max(-log10(res$PValue)[-log10(res$PValue) != Inf]) + 30
+    ymax = max(-log10(res$PValue)[-log10(res$PValue) != Inf]) + 1
     plot <- EnhancedVolcano(res,
         lab = res$gene_name,
         x = "logFC",
@@ -457,7 +457,7 @@ option_list <- list(
     make_option(c("-i", "--rna_counts"    ), type="character", default=NULL                 , metavar="path"   , help="Count file matrix where rows are genes and columns are samples."                        ),
     make_option(c("-j", "--ribo_counts"   ), type="character", default=NULL                 , metavar="path"   , help="Count file matrix where rows are genes and columns are samples."                        ),
     make_option(c("-c", "--count_col"     ), type="integer"  , default=2                    , metavar="integer", help="First column containing sample count data."                                             ),
-    make_option(c("-t", "--tx_table"      ), type="character", default=NULL                   , metavar="path",    help="Table linking transcript and gene IDs/names"                                          ),
+    make_option(c("-t", "--tx_table_path"      ), type="character", default=NULL                   , metavar="path",    help="Table linking transcript and gene IDs/names"                                          ),
     make_option(c("-f", "--tx_table_col"  ), type="character",  default="gene_id"        , metavar="string" , help="column name of tx_table to use as keys"                                                    ),
     make_option(c("-r", "--orf_tx_table"  ), type="character", default=NULL                   , metavar="path",    help="Table linking ORF and transcript IDs"                                          ),
     make_option(c("-d", "--id_col"        ), type="integer"  , default=1                    , metavar="integer", help="Column containing identifiers to be used."                                              ),
@@ -474,15 +474,15 @@ opt        <- parse_args(opt_parser)
 
 ## DEBUG
 # opt$metadata <- "sample_sheet.csv"
-# opt$rna_counts <- "rna/gene_agg_NumReads.csv"
-# opt$ribo_counts <- "ribo/gene_agg_NumReads.csv"
+# opt$rna_counts <- "table.csv"
+# # opt$ribo_counts <- "ribo/gene_agg_NumReads.csv"
 # opt$count_col <- 5
 # opt$sep <- ","
-# opt$tx_table <- "tx_table.csv"
+# # opt$tx_table <- "tx_table.csv"
 # opt$cores <- 1
 # opt$no_batch_factor <- TRUE
 # opt$contrast_cols <- "disease_id"
-# opt$outdir <- "test/"
+# # opt$outdir <- "test/"
 
 ### DEBUGING ### 
 # opt$metadata <- "sample_sheet.csv"
@@ -501,6 +501,10 @@ register(MulticoreParam(opt$cores))
 # Parsing multi-group contrasts
 contrast_grps <- parse_groups(opt$contrast_cols)
 contrast_col <- paste0(contrast_grps, collapse="__")
+# Add trailing / to opt$outdir if missing
+if (!grepl("/", opt$outdir)) {
+  opt$outdir <- paste0(opt$outdir, "/")
+}
 # Check whether outdir exists and create it
 dir.create(opt$outdir, showWarnings = FALSE, recursive = TRUE)
 # Define the path to the log file
@@ -565,9 +569,9 @@ if (!is.null(opt$rna_counts)) {
   rna_ids <- rownames(rna_counts)
 }
 
-if (!is.null(opt$tx_table)) {
+if (!is.null(opt$tx_table_path)) {
   # Get TX table to parse gene names
-  tx.table <- read.csv(opt$tx_table)
+  tx.table <- read.csv(opt$tx_table_path)
   # Create dictionary that connects counts row id with <GENENAME:TRANSCRIPT_CDSTIS>
   feature2name <- (
       tx.table 
@@ -831,17 +835,27 @@ meta.samples <- (
 
 # Create design formula and sample groups  ----------------------------
 f = ("~0 + group")
-# include non-unique contrast col names
-contrast_cols <- list()
-# Create all possible combinations of merged contrast groups
-temp <- unlist(lapply(contrast_col, function(col) grep(paste0("^", col, "."), colnames(meta.samples), value = TRUE)))
 # Check with meta.samples wether column exists
-for (col in temp) {
-  if (length(unique(meta.samples[[col]])) > 1) {
-    contrast_cols <- append(contrast_cols, col[[1]])
+contrast_cols <- list()
+for (col in contrast_grps) {
+  matches <- grep(paste0("^", col, "\\.\\d+$"), colnames(meta.samples), value = TRUE)
+  if (length(matches) > 0) {
+    nums <- as.integer(sub(paste0("^", col, "\\."), "", matches))
+    max_match <- max(nums, na.rm = TRUE)
+    for (n in seq(max_match, 0)) {
+      col_n <- paste0(col, ".", n)
+      if (col_n %in% colnames(meta.samples) && length(unique(meta.samples[[col_n]])) > 1) {
+        for (i in seq(1, n)) {
+          col_i <- paste0(col, ".", i)
+          contrast_cols <- append(contrast_cols, col_i)
+        }
+        break
+      }
+    }
   }
 }
 contrast_cols <- unlist(contrast_cols)
+
 select_cols <- c("counts_col", contrast_cols, "seq_type")
 # evaluate location_id, source_id, disease_id, treatment_id
 common_cols <- c("source_id", "location_id", "disease_id", "treatment_id")
