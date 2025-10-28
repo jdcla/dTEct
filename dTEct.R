@@ -644,17 +644,14 @@ if (!is.null(opt$rna_counts) && !is.null(opt$ribo_counts)) {
   }
   counts <- cbind(RNA=as.matrix(rna_counts_select), Ribo=as.matrix(ribo_counts_select))
   seq_types <- c("RNA", "Ribo")
-  out_dirs <- c(dirname(opt$rna_counts), dirname(opt$ribo_counts))
 } else if (!is.null(opt$rna_counts)) {
   counts <- rna_counts
   meta.table <- meta.table
   seq_types <- c("RNA")
-  out_dirs <- c(dirname(opt$rna_counts))
 } else {
   counts <- ribo_counts
   meta.table <- meta.table
   seq_types <- c("Ribo")
-  out_dirs <- c(dirname(opt$ribo_counts))
 }
 ######## DEBUG
 # counts <- counts[1:2000,]
@@ -961,7 +958,6 @@ norm_counts_list <- list(RNA=dge[,meta.samples$seq_type == "RNA"], Ribo=dge[,met
 # Save normalized count data separate for RNA and Ribo samples within the input directory of both, respectively
 for (i in seq_along(seq_types)) {
   seq_type <- seq_types[i]
-  out_dir <- out_dirs[i]
   if (opt$tx_table_col == "transcript_id") {
     prefix <- "no_agg" 
   } else {
@@ -969,7 +965,7 @@ for (i in seq_along(seq_types)) {
   }
   logcpm_counts <- cpm(norm_counts_list[[seq_type]], normalized.lib.sizes = TRUE, log=TRUE, prior.count=1)
   formatted_data <- rownames_to_column(data.frame(format(logcpm_counts, digits=3, nsmall = 3)), "Name")
-  write.table(formatted_data, file=str_c(out_dir, "/", prefix, "_cpm_log_matrix.csv"), sep=",", row.names = FALSE, quote=FALSE)
+  write.table(formatted_data, file=str_c(opt$outdir, prefix, "_", seq_type, "_cpm_log_matrix.csv"), sep=",", row.names = FALSE, quote=FALSE)
 }
 # Fit the GLM model
 fit <- glmQLFit(dge, design)
