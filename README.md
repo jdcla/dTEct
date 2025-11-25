@@ -68,7 +68,7 @@ Rscript dTEct.R \
     --rna_counts example/rna_numreads.csv \
     --ribo_counts example/ribo_numreads.csv \
     --tx_table_path example/tx_table.csv \
-    --feature_level "transcript" \
+    --feature_level "gene" \
     --contrast_cols "source_id,treatment_id" \
     --outdir example/out/ \
     --cores 4
