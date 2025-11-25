@@ -24,13 +24,13 @@ This script is designed to run in an R environment. You will need the following 
 ### Installation
 
 The easiest use of this script is by running the singularity container present on the turbo share, on any UM Linux system:
-|||bash
+```bash
 singularity exec /nfs/turbo/umms-prensnerturbo/shared/workflows/singularities/DE_tools.sif dTEct.R <function flags>
-|||
+```
 
 Alternatively, you can install all required packages by running the following commands in your R console:
 
-|||R
+```R
 # Install packages from CRAN
 install.packages(c("optparse", "tidyverse", "pheatmap", "RColorBrewer", "ggplot2", "svglite"))
 
@@ -39,7 +39,7 @@ if (!require("BiocManager", quietly = TRUE))
     install.packages("BiocManager")
 
 BiocManager::install(c("edgeR", "DESeq2", "EnhancedVolcano", "DEFormats", "BiocParallel"))
-|||
+```
 
 ## Input Files
 
@@ -96,7 +96,7 @@ Clone or download the repository. The example files should be located in the `ex
 
 Open your terminal or command prompt, navigate to the script's directory, and execute the following command:
 
-|||bash
+```bash
 Rscript dTEct.R \
     --metadata example/metadata.csv \
     --rna_counts example/rna_numreads.csv \
@@ -107,7 +107,7 @@ Rscript dTEct.R \
     --count_col 5 \
     --contrast_cols "source_id,treatment_id" \
     --cores 4
-|||
+```
 
 ### 3. Check the Output
 
