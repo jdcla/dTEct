@@ -1053,6 +1053,8 @@ if (sum(mask) > 0) {
 counts <- counts[mask == FALSE,]
 
 # Import and process metadata --------------------------------------------------------------
+
+# 1. CLEAN & DEDUPLICATE METADATA
 meta.table <- (
   meta.table
   |> group_by(smart_id, data_type)
@@ -1065,7 +1067,73 @@ meta.table <- (
 )
 
 # -----------------------------------------------------------------------------
-# 2. INTELLIGENT GROUPING (Renaming sparse subgroups, Keeping sparse supergroups)
+# 2. DICTIONARY GENERATION & COLUMN SPLITTING (Moved UP)
+# -----------------------------------------------------------------------------
+cat("Parsing contrast groups and splitting hierarchies...\n", file=log_file, append=TRUE)
+
+comb_dict <- list()
+uniq_dict <- list()
+num_col_splits <- list()
+
+# This loop modifies meta.table in-place to add .1, .2 columns needed for hierarchy
+for (column in contrast_grps) {
+  
+  # Handle combined factors (Treat:Time -> Treat_and_Time)
+  if (!is.null(meta.table[[column]]) && length(meta.table[[column]]) > 0) {
+    meta.table[[column]] <- gsub(":", "_and_", meta.table[[column]])
+  }
+  
+  # Calculate depth of hierarchy (dots)
+  max_splits <- max(str_count(meta.table[[column]], "\\.") + 1)
+  num_col_splits[[column]] <- max_splits
+  column_names <- paste0(column, ".", seq_len(max_splits))
+  
+  # Create the split columns in meta.table immediately
+  for (i in seq_len(max_splits)) {
+    meta.table[[column_names[i]]] <- sapply(strsplit(meta.table[[column]], "\\."), function(x) {
+      paste(x[1:i], collapse = ".")
+    })
+  }
+  # normalize main column
+  meta.table[[column]] <- sapply(strsplit(meta.table[[column]], "\\."), function(x) {
+    paste(c(x, rep("NA", max_splits - length(x))), collapse = ".")
+  })
+  
+  # Log what we found
+  cat(paste0("  Column '", column, "': Max Depth = ", max_splits, "\n"), file=log_file, append=TRUE)
+  cat(paste0("  Unique Groups found: ", paste(unique(meta.table[[column]]), collapse=", "), "\n"), file=log_file, append=TRUE)
+
+  # Build Contrast Combinations
+  combs <- list()
+  for (i in seq_len(max_splits)) {
+    vals <- unique(meta.table[[column_names[i]]])
+    vals <- vals[!grepl("\\.NA", vals)]
+    if (length(vals) > 1) {
+      groups <- combn(vals, 2, simplify)
+      if (any(grep("_and_", meta.table[[column]]))) {
+        orth_vals_1 <- unique(sapply(strsplit(meta.table[[column]], "_and_"), `[`, 1))
+        orth_vals_2 <- unique(sapply(strsplit(meta.table[[column]], "_and_"), `[`, 2))
+        orth_groups_1 <- combn(orth_vals_1, 2, simplify)
+        orth_groups_2 <- combn(orth_vals_2, 2, simplify)
+        groups <- cbind(groups, orth_groups_1, orth_groups_2)
+      }
+      for (j in 1:length(groups[1,])) {
+        if (i > 1) {
+          if (substr_to_nth_dot(groups[,j][1], i-1) == substr_to_nth_dot(groups[,j][2], i-1)) {
+            combs <- append(combs, list(groups[,j]))
+          }
+        } else {
+          combs <- append(combs, list(groups[,j]))
+        }
+      }
+    }
+  }
+  comb_dict[[column]] <- combs
+  uniq_dict[[column]] <- unique(unlist(combs))
+}
+
+# -----------------------------------------------------------------------------
+# 3. INTELLIGENT GROUPING (Renaming sparse subgroups)
 # -----------------------------------------------------------------------------
 for (contrast in contrast_grps) {
   dot_counts <- sapply(meta.table[[contrast]], function(x) {
@@ -1085,7 +1153,7 @@ for (contrast in contrast_grps) {
             meta.table[mask, contrast] <- new_group
             cat("Optimization: Renaming sparse subgroup:", entry, "->", new_group, "\n", file = log_file, append = TRUE)
           } else {
-            cat("Optimization: Group", entry, "has low replicates (n=1). Keeping for global variance estimation but excluding from contrasts.\n", file = log_file, append = TRUE)
+            cat("Optimization: Group", entry, "has low replicates (n=1). Keeping for global variance.\n", file = log_file, append = TRUE)
           }
         }
     }
@@ -1093,15 +1161,16 @@ for (contrast in contrast_grps) {
 }
 
 # -----------------------------------------------------------------------------
-# 3. PREPARE FULL DATASET
+# 4. PREPARE FULL DATASET
 # -----------------------------------------------------------------------------
+# Select relevant columns 
+# CRITICAL: This grep logic will now pick up the .1, .2 columns created in Step 2
 meta.samples <- (
   meta.table
   |> filter(counts_col %in% colnames(counts))
   |> select(
     smart_id,
     any_of(c("sample_type", "batch_date")),
-    # Dynamically select all columns related to the requested contrasts
     any_of(unlist(lapply(contrast_grps, function(col) grep(paste0("^", col), colnames(meta.table), value = TRUE)))),
     rep = replicate_num,
     control = test_or_control,
@@ -1138,7 +1207,7 @@ meta.design <- meta.samples %>% column_to_rownames("counts_col")
 design <- model.matrix(as.formula(f), data=data.frame(meta.design))
 
 # -----------------------------------------------------------------------------
-# 4. NORMALIZE & QC
+# 5. NORMALIZE & QC
 # -----------------------------------------------------------------------------
 cat("Constructing DGE Object with ALL samples...\n", file=log_file, append=TRUE)
 cat(paste0("Formula: ", f, "\n"), file=log_file, append=TRUE)
@@ -1172,59 +1241,28 @@ for (lbl in names(qc_types)) {
     }
 }
 
-# -----------------------------------------------------------------------------
-# 5. GENERATE CONTRAST DICTIONARIES
-# -----------------------------------------------------------------------------
-comb_dict <- list()
-uniq_dict <- list()
-num_col_splits <- list()
-for (column in contrast_grps) {
-  
-  # HANDLER FOR COMBINED FACTORS (e.g. "Treat:Time")
-  # We convert ':' to '_and_' so the downstream logic recognizes it as a combination
-  if (!is.null(meta.table[[column]]) && length(meta.table[[column]]) > 0) {
-    meta.table[[column]] <- gsub(":", "_and_", meta.table[[column]])
-  }
-  
-  max_splits <- max(str_count(meta.table[[column]], "\\.") + 1)
-  num_col_splits[[column]] <- max_splits
-  column_names <- paste0(column, ".", seq_len(max_splits))
-  
-  for (i in seq_len(max_splits)) {
-    meta.table[[column_names[i]]] <- sapply(strsplit(meta.table[[column]], "\\."), function(x) {
-      paste(x[1:i], collapse = ".")
-    })
-  }
-  meta.table[[column]] <- sapply(strsplit(meta.table[[column]], "\\."), function(x) {
-    paste(c(x, rep("NA", max_splits - length(x))), collapse = ".")
-  })
-  
-  combs <- list()
-  for (i in seq_len(max_splits)) {
-    vals <- unique(meta.table[[column_names[i]]])
-    vals <- vals[!grepl("\\.NA", vals)]
-    if (length(vals) > 1) {
-      groups <- combn(vals, 2, simplify)
-      if (any(grep("_and_", meta.table[[column]]))) {
-        orth_vals_1 <- unique(sapply(strsplit(meta.table[[column]], "_and_"), `[`, 1))
-        orth_vals_2 <- unique(sapply(strsplit(meta.table[[column]], "_and_"), `[`, 2))
-        orth_groups_1 <- combn(orth_vals_1, 2, simplify)
-        orth_groups_2 <- combn(orth_vals_2, 2, simplify)
-        groups <- cbind(groups, orth_groups_1, orth_groups_2)
-      }
-      for (j in 1:length(groups[1,])) {
-        if (i > 1) {
-          if (substr_to_nth_dot(groups[,j][1], i-1) == substr_to_nth_dot(groups[,j][2], i-1)) {
-            combs <- append(combs, list(groups[,j]))
-          }
-        } else {
-          combs <- append(combs, list(groups[,j]))
-        }
-      }
-    }
-  }
-  comb_dict[[column]] <- combs
-  uniq_dict[[column]] <- unique(unlist(combs))
+# --- SAVE NORMALIZED MATRICES (Restored Functionality) ---
+cat("Saving normalized LogCPM matrices...\n", file=log_file, append=TRUE)
+
+# Define which types exist in the data
+seq_types_present <- intersect(c("RNA", "Ribo"), unique(dge$samples$seq_type))
+
+# Split DGE for exporting
+# Note: We use dge$samples$seq_type to ensure alignment
+norm_counts_list <- list()
+if("RNA" %in% seq_types_present) norm_counts_list$RNA <- dge[, dge$samples$seq_type == "RNA"]
+if("Ribo" %in% seq_types_present) norm_counts_list$Ribo <- dge[, dge$samples$seq_type == "Ribo"]
+
+for (seq_type in seq_types_present) {
+    # Calculate LogCPM
+    logcpm_counts <- cpm(norm_counts_list[[seq_type]], normalized.lib.sizes = TRUE, log=TRUE, prior.count=1)
+    
+    # Format and Save
+    formatted_data <- tibble::rownames_to_column(data.frame(format(logcpm_counts, digits=3, nsmall = 3)), "Name")
+    out_file <- paste0(opt$outdir, seq_type, "_cpm_log_matrix.csv")
+    
+    write.table(formatted_data, file=out_file, sep=",", row.names = FALSE, quote=FALSE)
+    cat(paste0("  Saved: ", out_file, "\n"), file=log_file, append=TRUE)
 }
 
 # -----------------------------------------------------------------------------
@@ -1233,59 +1271,51 @@ for (column in contrast_grps) {
 has_reps <- function(grp_name, meta, col_name, min_n=2) {
     num_dots <- str_count(grp_name, "\\.") + 1
     target_col <- paste0(col_name, ".", num_dots)
+    
     if (target_col %in% colnames(meta)) {
         n <- sum(meta[[target_col]] == grp_name, na.rm=TRUE)
         return(n >= min_n)
+    } else {
+        # Debugging Output
+        # cat(paste0("DEBUG: Column '", target_col, "' not found in design matrix. Available: ", paste(colnames(meta), collapse=", "), "\n"))
+        return(FALSE)
     }
-    return(FALSE)
 }
 
 cat("Filtering contrast lists for sufficient replicates...\n", file=log_file, append=TRUE)
 
 # Filter Combinations (Test vs Control)
 valid_comb <- list()
-if (!is.null(comb_dict[[contrast_col]])) {
-    for (tup in comb_dict[[contrast_col]]) {
-        # Keep contrast only if BOTH groups have replicates
-        if (has_reps(tup[1], meta.design, contrast_col) && has_reps(tup[2], meta.design, contrast_col)) {
-            valid_comb <- append(valid_comb, list(tup))
-        } else {
-            cat(paste0("Skipping contrast '", paste(tup, collapse=" vs "), "' (insufficient replicates)\n"), file=log_file, append=TRUE)
-        }
+for (tup in comb_dict[[contrast_col]]) {
+    if (has_reps(tup[1], meta.design, contrast_col) && has_reps(tup[2], meta.design, contrast_col)) {
+        valid_comb <- append(valid_comb, list(tup))
+    } else {
+        cat(paste0("Skipping contrast '", paste(tup, collapse=" vs "), "' (insufficient replicates)\n"), file=log_file, append=TRUE)
     }
 }
 comb_dict[[contrast_col]] <- valid_comb
 
 # Filter Uniques (Single Groups)
 valid_uniq <- list()
-if (!is.null(uniq_dict[[contrast_col]])) {
-    for (val in uniq_dict[[contrast_col]]) {
-        # Keep group only if it has replicates
-        if (has_reps(val, meta.design, contrast_col)) {
-            valid_uniq <- append(valid_uniq, list(val))
-        }
+for (val in uniq_dict[[contrast_col]]) {
+    if (has_reps(val, meta.design, contrast_col)) {
+        valid_uniq <- append(valid_uniq, list(val))
     }
 }
 uniq_dict[[contrast_col]] <- valid_uniq
 
-# --- STOP CHECK: Do we have any valid contrasts? ---
+# STOP Check
 num_valid_contrasts <- length(comb_dict[[contrast_col]]) + length(uniq_dict[[contrast_col]])
-
 if (num_valid_contrasts == 0) {
     cat("\n----------------------------------------------------------------\n", file=log_file, append=TRUE)
     cat("NO VALID CONTRASTS FOUND: All requested groups have insufficient replicates (n < 2).\n", file=log_file, append=TRUE)
-    cat("Skipping Differential Expression model fitting to avoid errors.\n", file=log_file, append=TRUE)
-    cat("QC plots have been generated in the 'QC' output folder.\n", file=log_file, append=TRUE)
+    cat("QC plots have been generated. Exiting successfully.\n", file=log_file, append=TRUE)
     cat("----------------------------------------------------------------\n", file=log_file, append=TRUE)
-    
-    # Exit successfully (Status 0) so Snakemake proceeds
     quit(save="no", status=0)
 }
 
-# --- PROCEED TO FITTING (Only if data exists) ---
+# Fit Models
 cat("Valid contrasts found. Fitting GLM models...\n", file=log_file, append=TRUE)
-
-# Fit Paired Model
 dge <- estimateDisp(dge, design, min.row.sum=30)
 fit_paired <- glmQLFit(dge, design)
 
