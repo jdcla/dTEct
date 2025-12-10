@@ -295,6 +295,10 @@ eval_gene_clusters <- function(norm_counts, meta, meta_cols, prefix, suffix) {
 evaluate_combination_contrast <- function(meta, tup, contrast_col, fit_paired, fit_rna, outdir, log_file) {
   rna_mask <- meta$seq_type == "RNA"
   ribo_mask <- meta$seq_type == "Ribo"
+  
+  # NEW: Detect Global Mode (Dual vs RNA-only)
+  has_ribo_data <- any(ribo_mask)
+  
   grp_rna <- list(); grp_ribo <- list(); n_rna <- list(); n_ribo <- list(); order <- list()
 
   for (i in seq_along(tup)) {
@@ -331,36 +335,49 @@ evaluate_combination_contrast <- function(meta, tup, contrast_col, fit_paired, f
     tup <- tup[c(2, 1)]
   }
   
-  evaluate_contrasts(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired, fit_rna, outdir, log_file)
+  # PASS has_ribo_data flag
+  evaluate_contrasts(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired, fit_rna, has_ribo_data, outdir, log_file)
 }
 
-evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired, fit_rna, outdir, log_file) {
+evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired, fit_rna, has_ribo_data, outdir, log_file) {
   strat_string <- ""
   
   # --- 1. RNA Contrasts ---
   if (length(unlist(grp_rna)) == 2) {
     n_msg <- paste0("    (n = ", n_rna[[1]], " / ", n_rna[[2]], ")")
 
-    # A) SHARED RNAs (Uses fit_paired & design)
-    grp_contrast_paired <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design)")
-    contrast_id_sub <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA")
-    out_prefix_sub <- paste0(outdir, "RNA/", contrast_id_sub)
-    title_sub <- paste0(contrast_id_sub, n_msg, " (Shared)")
-    
-    if (!is.null(grp_contrast_paired)) print(paste0("Evaluating RNA (Shared): ", grp_contrast_paired))
-    eval_contrast(fit_paired, grp_contrast_paired, out_prefix_sub, title_sub, log_file)
+    if (has_ribo_data) {
+        # --- CASE A: DUAL MODE (Ribo exists) ---
+        # 1. Paired/Shared Model -> Suffix "_RNA"
+        grp_contrast_paired <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design)")
+        contrast_id_sub <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA")
+        out_prefix_sub <- paste0(outdir, "RNA/", contrast_id_sub)
+        title_sub <- paste0(contrast_id_sub, n_msg, " (Shared)")
+        
+        if (!is.null(grp_contrast_paired)) print(paste0("Evaluating RNA (Shared): ", grp_contrast_paired))
+        eval_contrast(fit_paired, grp_contrast_paired, out_prefix_sub, title_sub, log_file)
 
-    # B) ALL RNAs (Uses fit_rna & design.rna)
-    grp_contrast_full <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design.rna)")
-    contrast_id_full <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA_full")
-    out_prefix_full <- paste0(outdir, "RNA/", contrast_id_full)
-    title_full <- paste0(contrast_id_full, n_msg, " (All)")
-    
-    eval_contrast(fit_rna, grp_contrast_full, out_prefix_full, title_full, log_file)
+        # 2. Independent Model -> Suffix "_RNA_full"
+        grp_contrast_full <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design.rna)")
+        contrast_id_full <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA_full")
+        out_prefix_full <- paste0(outdir, "RNA/", contrast_id_full)
+        title_full <- paste0(contrast_id_full, n_msg, " (All)")
+        
+        eval_contrast(fit_rna, grp_contrast_full, out_prefix_full, title_full, log_file)
+        
+    } else {
+        # --- CASE B: RNA-ONLY MODE ---
+        # Only output one file with suffix "_RNA", derived from the Independent (fit_rna) model.
+        grp_contrast_full <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design.rna)")
+        contrast_id_full <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA") # Simple Suffix
+        out_prefix_full <- paste0(outdir, "RNA/", contrast_id_full)
+        title_full <- paste0(contrast_id_full, n_msg, " (RNA Only)")
+        
+        eval_contrast(fit_rna, grp_contrast_full, out_prefix_full, title_full, log_file)
+    }
   }
 
   # --- 2. Ribo Contrasts ---
-  # Only use fit_paired (Standard)
   if (length(unlist(grp_ribo)) == 2) {
     n_msg <- paste0("    (n = ", n_ribo[[1]], " / ", n_ribo[[2]], ")")
     
@@ -373,7 +390,7 @@ evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired
     eval_contrast(fit_paired, grp_contrast, out_prefix, title, log_file)
   }
   
-  # --- 3. dTE Contrast (Uses fit_paired) ---
+  # --- 3. dTE Contrast ---
   if ((length(unlist(grp_ribo)) == 2) && (length(unlist(grp_rna)) == 2)) {
     left_cmd <- paste0("(", grp_ribo[[1]], " - ", grp_rna[[1]], ")")
     right_cmd <- paste0("(", grp_ribo[[2]], " - ", grp_rna[[2]], ")")
