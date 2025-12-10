@@ -1067,7 +1067,7 @@ meta.table <- (
 )
 
 # -----------------------------------------------------------------------------
-# 2. DICTIONARY GENERATION & COLUMN SPLITTING (Moved UP)
+# 2. DICTIONARY GENERATION & COLUMN SPLITTING
 # -----------------------------------------------------------------------------
 cat("Parsing contrast groups and splitting hierarchies...\n", file=log_file, append=TRUE)
 
@@ -1075,9 +1075,8 @@ comb_dict <- list()
 uniq_dict <- list()
 num_col_splits <- list()
 
-# This loop modifies meta.table in-place to add .1, .2 columns needed for hierarchy
+# Helper for handling combined columns
 for (column in contrast_grps) {
-  
   # Handle combined factors (Treat:Time -> Treat_and_Time)
   if (!is.null(meta.table[[column]]) && length(meta.table[[column]]) > 0) {
     meta.table[[column]] <- gsub(":", "_and_", meta.table[[column]])
@@ -1164,13 +1163,13 @@ for (contrast in contrast_grps) {
 # 4. PREPARE FULL DATASET
 # -----------------------------------------------------------------------------
 # Select relevant columns 
-# CRITICAL: This grep logic will now pick up the .1, .2 columns created in Step 2
 meta.samples <- (
   meta.table
   |> filter(counts_col %in% colnames(counts))
   |> select(
     smart_id,
     any_of(c("sample_type", "batch_date")),
+    # This grep now correctly finds the .1, .2 columns created above
     any_of(unlist(lapply(contrast_grps, function(col) grep(paste0("^", col), colnames(meta.table), value = TRUE)))),
     rep = replicate_num,
     control = test_or_control,
@@ -1193,13 +1192,20 @@ if (length(contrast_grps) > 0) {
     stop("No valid contrast columns found in metadata.")
 }
 
-# Define Design Formula
+# Define Design Formula (ROBUST)
 f = "~0 + group"
-if (!opt$no_batch_factor && "batch_date" %in% colnames(meta.samples) && nlevels(meta.samples$batch_date) > 1) {
+
+# Helper to strictly check for variation
+has_var <- function(vec) { length(unique(as.character(vec))) > 1 }
+
+if (!opt$no_batch_factor && "batch_date" %in% colnames(meta.samples) && has_var(meta.samples$batch_date)) {
     f = paste0(f, " + batch_date")
+    cat("Adding 'batch_date' to design model.\n", file=log_file, append=TRUE)
 }
-if ("sample_type" %in% colnames(meta.samples) && nlevels(meta.samples$sample_type) > 1) {
+
+if ("sample_type" %in% colnames(meta.samples) && has_var(meta.samples$sample_type)) {
     f = paste0(f, " + sample_type")
+    cat("Adding 'sample_type' to design model.\n", file=log_file, append=TRUE)
 }
 
 # Create Design Matrix
@@ -1217,7 +1223,26 @@ keep <- filterByExpr(dge, design)
 dge <- dge[keep, , keep.lib.sizes = FALSE]
 dge <- calcNormFactors(dge, method="TMM")
 
-# QC Plots
+# --- SAVE NORMALIZED MATRICES ---
+cat("Saving normalized LogCPM matrices...\n", file=log_file, append=TRUE)
+seq_types_present <- intersect(c("RNA", "Ribo"), unique(dge$samples$seq_type))
+
+for (st in seq_types_present) {
+    prefix <- ifelse(!is.null(opt$tx_table_col) && opt$tx_table_col == "transcript_id", "no_agg", "gene_agg")
+    
+    # Subset DGE for this type
+    sub_dge <- dge[, dge$samples$seq_type == st, keep.lib.sizes=FALSE]
+    if (ncol(sub_dge) > 0) {
+        logcpm_counts <- cpm(sub_dge, normalized.lib.sizes = TRUE, log=TRUE, prior.count=1)
+        formatted_data <- tibble::rownames_to_column(data.frame(format(logcpm_counts, digits=3, nsmall = 3)), "Name")
+        
+        out_file <- paste0(opt$outdir, prefix, "_", st, "_cpm_log_matrix.csv")
+        write.table(formatted_data, file=out_file, sep=",", row.names = FALSE, quote=FALSE)
+        cat(paste0("  Saved: ", out_file, "\n"), file=log_file, append=TRUE)
+    }
+}
+
+# --- GENERATE QC PLOTS ---
 cat("Generating QC Plots...\n", file=log_file, append=TRUE)
 qc_cols <- unique(c(contrast_grps, "treatment_id", "source_id", "disease_id"))
 qc_cols <- qc_cols[qc_cols %in% colnames(dge$samples)]
@@ -1231,38 +1256,12 @@ for (lbl in names(qc_types)) {
     if (sum(mask) >= 3) { 
         sub_dge <- dge[, mask]
         sub_meta <- dge$samples[mask, ]
-        
         eval_MDS(sub_dge, sub_meta, qc_cols, opt$outdir, lbl, opt$plot_ids)
         eval_PCA(sub_dge, sub_meta, qc_cols, opt$outdir, lbl, opt$plot_ids)
-        
         log_cpm <- cpm(sub_dge, log=TRUE, normalized.lib.sizes=TRUE)
         eval_heatmap(log_cpm, sub_meta, qc_cols, opt$outdir, lbl)
         eval_gene_clusters(log_cpm, sub_meta, qc_cols, opt$outdir, lbl)
     }
-}
-
-# --- SAVE NORMALIZED MATRICES (Restored Functionality) ---
-cat("Saving normalized LogCPM matrices...\n", file=log_file, append=TRUE)
-
-# Define which types exist in the data
-seq_types_present <- intersect(c("RNA", "Ribo"), unique(dge$samples$seq_type))
-
-# Split DGE for exporting
-# Note: We use dge$samples$seq_type to ensure alignment
-norm_counts_list <- list()
-if("RNA" %in% seq_types_present) norm_counts_list$RNA <- dge[, dge$samples$seq_type == "RNA"]
-if("Ribo" %in% seq_types_present) norm_counts_list$Ribo <- dge[, dge$samples$seq_type == "Ribo"]
-
-for (seq_type in seq_types_present) {
-    # Calculate LogCPM
-    logcpm_counts <- cpm(norm_counts_list[[seq_type]], normalized.lib.sizes = TRUE, log=TRUE, prior.count=1)
-    
-    # Format and Save
-    formatted_data <- tibble::rownames_to_column(data.frame(format(logcpm_counts, digits=3, nsmall = 3)), "Name")
-    out_file <- paste0(opt$outdir, seq_type, "_cpm_log_matrix.csv")
-    
-    write.table(formatted_data, file=out_file, sep=",", row.names = FALSE, quote=FALSE)
-    cat(paste0("  Saved: ", out_file, "\n"), file=log_file, append=TRUE)
 }
 
 # -----------------------------------------------------------------------------
@@ -1273,18 +1272,21 @@ has_reps <- function(grp_name, meta, col_name, min_n=2) {
     target_col <- paste0(col_name, ".", num_dots)
     
     if (target_col %in% colnames(meta)) {
-        n <- sum(meta[[target_col]] == grp_name, na.rm=TRUE)
-        return(n >= min_n)
-    } else {
-        # Debugging Output
-        # cat(paste0("DEBUG: Column '", target_col, "' not found in design matrix. Available: ", paste(colnames(meta), collapse=", "), "\n"))
-        return(FALSE)
+        sub_meta <- meta[meta[[target_col]] == grp_name, ]
+        
+        # FIX: Check counts PER SEQ TYPE. 
+        # Both RNA and Ribo must have >= 2 for the model to work properly for dTE
+        counts_by_type <- table(sub_meta$seq_type)
+        if (length(counts_by_type) > 0 && all(counts_by_type >= min_n)) {
+            return(TRUE)
+        }
     }
+    return(FALSE)
 }
 
 cat("Filtering contrast lists for sufficient replicates...\n", file=log_file, append=TRUE)
 
-# Filter Combinations (Test vs Control)
+# Filter Combinations
 valid_comb <- list()
 for (tup in comb_dict[[contrast_col]]) {
     if (has_reps(tup[1], meta.design, contrast_col) && has_reps(tup[2], meta.design, contrast_col)) {
@@ -1295,7 +1297,7 @@ for (tup in comb_dict[[contrast_col]]) {
 }
 comb_dict[[contrast_col]] <- valid_comb
 
-# Filter Uniques (Single Groups)
+# Filter Uniques
 valid_uniq <- list()
 for (val in uniq_dict[[contrast_col]]) {
     if (has_reps(val, meta.design, contrast_col)) {
@@ -1308,7 +1310,7 @@ uniq_dict[[contrast_col]] <- valid_uniq
 num_valid_contrasts <- length(comb_dict[[contrast_col]]) + length(uniq_dict[[contrast_col]])
 if (num_valid_contrasts == 0) {
     cat("\n----------------------------------------------------------------\n", file=log_file, append=TRUE)
-    cat("NO VALID CONTRASTS FOUND: All requested groups have insufficient replicates (n < 2).\n", file=log_file, append=TRUE)
+    cat("NO VALID CONTRASTS FOUND: All requested groups have insufficient replicates (n < 2 per SeqType).\n", file=log_file, append=TRUE)
     cat("QC plots have been generated. Exiting successfully.\n", file=log_file, append=TRUE)
     cat("----------------------------------------------------------------\n", file=log_file, append=TRUE)
     quit(save="no", status=0)
@@ -1323,8 +1325,8 @@ fit_paired <- glmQLFit(dge, design)
 meta.rna <- meta.design[meta.design$seq_type == "RNA", , drop=FALSE]
 meta.rna <- droplevels(meta.rna)
 f_rna <- "~0 + group"
-if ("batch_date" %in% colnames(meta.rna) && nlevels(meta.rna$batch_date) > 1) f_rna <- paste0(f_rna, " + batch_date")
-if ("sample_type" %in% colnames(meta.rna) && nlevels(meta.rna$sample_type) > 1) f_rna <- paste0(f_rna, " + sample_type")
+if ("batch_date" %in% colnames(meta.rna) && has_var(meta.rna$batch_date)) f_rna <- paste0(f_rna, " + batch_date")
+if ("sample_type" %in% colnames(meta.rna) && has_var(meta.rna$sample_type)) f_rna <- paste0(f_rna, " + sample_type")
 
 dge_rna <- DGEList(counts=counts[, rownames(meta.rna)], samples=data.frame(meta.rna))
 design.rna <- model.matrix(as.formula(f_rna), data=data.frame(meta.rna))
