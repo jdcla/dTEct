@@ -339,6 +339,66 @@ evaluate_combination_contrast <- function(meta, tup, contrast_col, fit_paired, f
   evaluate_contrasts(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired, fit_rna, has_ribo_data, outdir, log_file)
 }
 
+exec_one_vs_all <- function(meta, target_group, contrast_col, fit_paired, fit_rna, has_ribo_data, outdir, log_file) {
+    # 1. Identify Target vs Other Samples
+    # Note: We use startsWith to capture hierarchies (e.g. Target="MBL" includes "MBL.SHH")
+    target_mask <- startsWith(as.character(meta[[contrast_col]]), target_group)
+    other_mask  <- !target_mask
+    
+    # 2. Check Replicates for 'Other'
+    # We need to ensure the 'Other' group exists and has sufficient data
+    has_other_rna  <- sum(other_mask & meta$seq_type == "RNA") >= 2
+    has_other_ribo <- sum(other_mask & meta$seq_type == "Ribo") >= 2
+    
+    # If we don't have enough "Other" samples, skip
+    if (!has_other_rna) return(NULL)
+    if (has_ribo_data && !has_other_ribo) return(NULL)
+
+    # 3. Construct Strings
+    # Helper to get string and N-count
+    get_str <- function(mask, type) {
+        sub_meta <- meta[mask & meta$seq_type == type, ]
+        if (nrow(sub_meta) == 0) return(NULL)
+        
+        vals <- unique(sub_meta[[contrast_col]])
+        # Weight by sample frequency (Micro-average)
+        w_dict <- as.list(table(sub_meta[[contrast_col]]) / nrow(sub_meta))
+        
+        constr <- construct_contrast_string(vals, type, meta, w_dict)
+        return(list(s=constr, n=nrow(sub_meta)))
+    }
+
+    # Target Strings
+    t_rna <- get_str(target_mask, "RNA")
+    t_ribo <- if(has_ribo_data) get_str(target_mask, "Ribo") else NULL
+    
+    # Other Strings
+    o_rna <- get_str(other_mask, "RNA")
+    o_ribo <- if(has_ribo_data) get_str(other_mask, "Ribo") else NULL
+    
+    # 4. Prepare Arguments for Standard Evaluator
+    # We basically fake a "Tuple" input for evaluate_contrasts
+    
+    # Fake Tuple for naming: c(Target, "OTHER")
+    tup_fake <- c(target_group, "OTHER")
+    
+    # RNA Inputs
+    grp_rna <- list(t_rna$s, o_rna$s)
+    n_rna <- list(t_rna$n, o_rna$n)
+    
+    # Ribo Inputs
+    grp_ribo <- list()
+    n_ribo <- list()
+    if (has_ribo_data) {
+        grp_ribo <- list(t_ribo$s, o_ribo$s)
+        n_ribo <- list(t_ribo$n, o_ribo$n)
+    }
+    
+    # Pass to existing function
+    # It will handle the file creation, fitting, and plotting
+    evaluate_contrasts(grp_rna, grp_ribo, tup_fake, n_rna, n_ribo, fit_paired, fit_rna, has_ribo_data, outdir, log_file)
+}
+
 evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired, fit_rna, has_ribo_data, outdir, log_file) {
   strat_string <- ""
   
@@ -806,6 +866,7 @@ option_list <- list(
     make_option(c("-u", "--outer_join"    ), type="logical"  , default=FALSE                , metavar="boolean", help="Outer join RNA and Ribo reads, fill NAs with 0 expression."                                                     ),
     make_option(c("-l", "--cores"         ), type="integer"  , default=1                    , metavar="integer", help="Number of cores."                                                                       ),
     make_option(c("-a", "--contrast_cols" ), type="character", default="treatment_id"               , metavar="character", help="Column names from which contrasts are derived; separated by commas."          ),
+    make_option(c("-O", "--one_vs_all"), type="logical", default=FALSE, metavar="boolean", help="If TRUE, also run One-vs-All contrasts for every group detected."),
     make_option(c("-p", "--plot_ids"), type="logical", default=FALSE, metavar="boolean", help="Plot Smart IDs instead of replicate numbers in PCA/MDS."),
     make_option(c("-e", "--no_batch_factor"), type="logical" , default=FALSE,               , metavar="boolean", help="Don't create factors for batch date. Can be necessary to achieve full rank for some settings")
 )
@@ -1245,15 +1306,13 @@ cat("Saving normalized LogCPM matrices...\n", file=log_file, append=TRUE)
 seq_types_present <- intersect(c("RNA", "Ribo"), unique(dge$samples$seq_type))
 
 for (st in seq_types_present) {
-    prefix <- ifelse(!is.null(opt$tx_table_col) && opt$tx_table_col == "transcript_id", "no_agg", "gene_agg")
-    
     # Subset DGE for this type
     sub_dge <- dge[, dge$samples$seq_type == st, keep.lib.sizes=FALSE]
     if (ncol(sub_dge) > 0) {
         logcpm_counts <- cpm(sub_dge, normalized.lib.sizes = TRUE, log=TRUE, prior.count=1)
         formatted_data <- tibble::rownames_to_column(data.frame(format(logcpm_counts, digits=3, nsmall = 3)), "Name")
         
-        out_file <- paste0(opt$outdir, prefix, "_", st, "_cpm_log_matrix.csv")
+        out_file <- paste0(opt$outdir, st, "_cpm_log_matrix.csv")
         write.table(formatted_data, file=out_file, sep=",", row.names = FALSE, quote=FALSE)
         cat(paste0("  Saved: ", out_file, "\n"), file=log_file, append=TRUE)
     }
@@ -1368,5 +1427,33 @@ bplapply(uniq_dict[[contrast_col]], function(val) {
 bplapply(comb_dict[[contrast_col]], function(val) {
     evaluate_combination_contrast(dge.meta, val, contrast_col, fit_paired, fit_rna, opt$outdir, log_file)
 })
+
+# -----------------------------------------------------------------------------
+# 7. EXECUTE ONE-VS-ALL (Optional)
+# -----------------------------------------------------------------------------
+if (opt$one_vs_all) {
+    cat("\nExecuting One-vs-All Contrasts...\n", file=log_file, append=TRUE)
+    
+    # We iterate over every valid unique group found
+    # (These have already been filtered for replicates in Step 6)
+    bplapply(uniq_dict[[contrast_col]], function(val) {
+        # Check if we should run OvA for this group
+        # (It must define a subset, i.e., not encompass the entire dataset)
+        is_subset <- sum(startsWith(as.character(dge.meta[[contrast_col]]), val)) < nrow(dge.meta)
+        
+        if (is_subset) {
+            exec_one_vs_all(
+                dge.meta, 
+                target_group = val, 
+                contrast_col = contrast_col, 
+                fit_paired = fit_paired, 
+                fit_rna = fit_rna, 
+                has_ribo_data = (length(qc_types$Ribo) > 0), # Check if Ribo exists
+                outdir = opt$outdir, 
+                log_file = log_file
+            )
+        }
+    })
+}
 
 cat("Analysis complete.\n", file=log_file, append=TRUE)
