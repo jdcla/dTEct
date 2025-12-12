@@ -185,14 +185,16 @@ eval_PCA <- function(dge.set, meta, cols_of_interest, prefix, suffix, plot_ids=F
 }
 
 # Distance Heatmap ------------------------------------------------------------
-
 eval_heatmap <- function(norm_counts, meta, meta_cols, prefix, suffix) {
   xy_dim <- max(dim(meta)[1]*0.15, 5)
+  # Calculate Distance
   sampleDists <- dist(t(norm_counts))
   sampleDistMatrix <- as.matrix(sampleDists)
-  colnames(sampleDistMatrix) <- meta$counts_col 
-  rownames(sampleDistMatrix) <- apply(meta[, meta_cols], 1, paste, collapse = "__")
-  # colnames(sampleDistMatrix) <- NULL
+  colnames(sampleDistMatrix) <- colnames(norm_counts)
+  rownames(sampleDistMatrix) <- apply(meta[, meta_cols, drop=FALSE], 1, paste, collapse = "__")
+  anno_df <- as.data.frame(meta[, meta_cols, drop=FALSE])
+  rownames(anno_df) <- colnames(sampleDistMatrix)
+
   colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
   for (fmt in c("png", "svg")) {
     if (fmt == "png") {
@@ -200,7 +202,6 @@ eval_heatmap <- function(norm_counts, meta, meta_cols, prefix, suffix) {
       pheatmap(sampleDistMatrix,
         clustering_distance_rows = sampleDists,
         clustering_distance_cols = sampleDists,
-        # col = colors,
         main = paste0(suffix, ": Euclidean distance between counts of samples on fitted data.")
       )
       w()
@@ -209,30 +210,28 @@ eval_heatmap <- function(norm_counts, meta, meta_cols, prefix, suffix) {
       pheatmap(sampleDistMatrix,
         clustering_distance_rows = sampleDists,
         clustering_distance_cols = sampleDists,
-        # col = colors,
         main = paste0(suffix, ": Euclidean distance between counts of samples on fitted data.")
       )
       w()
     }
+  } 
+  if (!is.null(colnames(sampleDistMatrix)) && !is.null(rownames(sampleDistMatrix))) {
+      sorted_col_order <- order(colnames(sampleDistMatrix))
+      sorted_row_order <- order(rownames(sampleDistMatrix))
+      
+      sorted_sampleDistMatrix <- sampleDistMatrix[sorted_row_order, sorted_col_order]
+      
+      write.table(
+        cbind(sample = rownames(sorted_sampleDistMatrix), sorted_sampleDistMatrix),
+        file=str_c(prefix, "sample.dists_", paste0(suffix, ".txt")),
+        row.names=FALSE,
+        col.names=TRUE,
+        sep="\t",
+        quote=FALSE
+      )
   }
-  # Sort the column and row names
-  sorted_col_order <- order(colnames(sampleDistMatrix))
-  sorted_row_order <- order(rownames(sampleDistMatrix))
-  # Reorder the sampleDistMatrixrix based on the sorted column and row names
-  sorted_sampleDistMatrix <- sampleDistMatrix[sorted_row_order, sorted_col_order]
-  # Update column and row names to reflect the sorted order
-  colnames(sorted_sampleDistMatrix) <- colnames(sampleDistMatrix)[sorted_col_order]
-  rownames(sorted_sampleDistMatrix) <- rownames(sampleDistMatrix)[sorted_row_order]
-  ## WRITE SAMPLE DISTANCES TO FILE
-  write.table(
-    cbind(sample = rownames(sorted_sampleDistMatrix), sorted_sampleDistMatrix),
-    file=str_c(prefix, "sample.dists_", paste0(suffix, ".txt")),
-    row.names=FALSE,
-    col.names=TRUE,
-    sep="\t",
-    quote=FALSE
-  )
 }
+
 
 eval_gene_clusters <- function(norm_counts, meta, meta_cols, prefix, suffix) {
   x_dim <- max(dim(meta)[1]*0.18, 7)
@@ -251,7 +250,7 @@ eval_gene_clusters <- function(norm_counts, meta, meta_cols, prefix, suffix) {
     # Ensure they actually exist in the metadata object
     cols_to_select <- cols_to_select[cols_to_select %in% colnames(meta)]
     
-    anno <- as.data.frame(meta[, cols_to_select])
+    anno <- as.data.frame(meta[, cols_to_select, drop=FALSE])
     
     if (i == 1) {
       rownames(anno) <- colnames(mat)
@@ -296,6 +295,10 @@ eval_gene_clusters <- function(norm_counts, meta, meta_cols, prefix, suffix) {
 evaluate_combination_contrast <- function(meta, tup, contrast_col, fit_paired, fit_rna, outdir, log_file) {
   rna_mask <- meta$seq_type == "RNA"
   ribo_mask <- meta$seq_type == "Ribo"
+  
+  # NEW: Detect Global Mode (Dual vs RNA-only)
+  has_ribo_data <- any(ribo_mask)
+  
   grp_rna <- list(); grp_ribo <- list(); n_rna <- list(); n_ribo <- list(); order <- list()
 
   for (i in seq_along(tup)) {
@@ -332,36 +335,109 @@ evaluate_combination_contrast <- function(meta, tup, contrast_col, fit_paired, f
     tup <- tup[c(2, 1)]
   }
   
-  evaluate_contrasts(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired, fit_rna, outdir, log_file)
+  # PASS has_ribo_data flag
+  evaluate_contrasts(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired, fit_rna, has_ribo_data, outdir, log_file)
 }
 
-evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired, fit_rna, outdir, log_file) {
+exec_one_vs_all <- function(meta, target_group, contrast_col, fit_paired, fit_rna, has_ribo_data, outdir, log_file) {
+    # 1. Identify Target vs Other Samples
+    # Note: We use startsWith to capture hierarchies (e.g. Target="MBL" includes "MBL.SHH")
+    target_mask <- startsWith(as.character(meta[[contrast_col]]), target_group)
+    other_mask  <- !target_mask
+    
+    # 2. Check Replicates for 'Other'
+    # We need to ensure the 'Other' group exists and has sufficient data
+    has_other_rna  <- sum(other_mask & meta$seq_type == "RNA") >= 2
+    has_other_ribo <- sum(other_mask & meta$seq_type == "Ribo") >= 2
+    
+    # If we don't have enough "Other" samples, skip
+    if (!has_other_rna) return(NULL)
+    if (has_ribo_data && !has_other_ribo) return(NULL)
+
+    # 3. Construct Strings
+    # Helper to get string and N-count
+    get_str <- function(mask, type) {
+        sub_meta <- meta[mask & meta$seq_type == type, ]
+        if (nrow(sub_meta) == 0) return(NULL)
+        
+        vals <- unique(sub_meta[[contrast_col]])
+        # Weight by sample frequency (Micro-average)
+        w_dict <- as.list(table(sub_meta[[contrast_col]]) / nrow(sub_meta))
+        
+        constr <- construct_contrast_string(vals, type, meta, w_dict)
+        return(list(s=constr, n=nrow(sub_meta)))
+    }
+
+    # Target Strings
+    t_rna <- get_str(target_mask, "RNA")
+    t_ribo <- if(has_ribo_data) get_str(target_mask, "Ribo") else NULL
+    
+    # Other Strings
+    o_rna <- get_str(other_mask, "RNA")
+    o_ribo <- if(has_ribo_data) get_str(other_mask, "Ribo") else NULL
+    
+    # 4. Prepare Arguments for Standard Evaluator
+    # We basically fake a "Tuple" input for evaluate_contrasts
+    
+    # Fake Tuple for naming: c(Target, "OTHER")
+    tup_fake <- c(target_group, "OTHER")
+    
+    # RNA Inputs
+    grp_rna <- list(t_rna$s, o_rna$s)
+    n_rna <- list(t_rna$n, o_rna$n)
+    
+    # Ribo Inputs
+    grp_ribo <- list()
+    n_ribo <- list()
+    if (has_ribo_data) {
+        grp_ribo <- list(t_ribo$s, o_ribo$s)
+        n_ribo <- list(t_ribo$n, o_ribo$n)
+    }
+    
+    # Pass to existing function
+    # It will handle the file creation, fitting, and plotting
+    evaluate_contrasts(grp_rna, grp_ribo, tup_fake, n_rna, n_ribo, fit_paired, fit_rna, has_ribo_data, outdir, log_file)
+}
+
+evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired, fit_rna, has_ribo_data, outdir, log_file) {
   strat_string <- ""
   
   # --- 1. RNA Contrasts ---
   if (length(unlist(grp_rna)) == 2) {
     n_msg <- paste0("    (n = ", n_rna[[1]], " / ", n_rna[[2]], ")")
 
-    # A) SHARED RNAs (Uses fit_paired & design)
-    grp_contrast_paired <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design)")
-    contrast_id_sub <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA")
-    out_prefix_sub <- paste0(outdir, "RNA/", contrast_id_sub)
-    title_sub <- paste0(contrast_id_sub, n_msg, " (Shared)")
-    
-    if (!is.null(grp_contrast_paired)) print(paste0("Evaluating RNA (Shared): ", grp_contrast_paired))
-    eval_contrast(fit_paired, grp_contrast_paired, out_prefix_sub, title_sub, log_file)
+    if (has_ribo_data) {
+        # --- CASE A: DUAL MODE (Ribo exists) ---
+        # 1. Paired/Shared Model -> Suffix "_RNA"
+        grp_contrast_paired <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design)")
+        contrast_id_sub <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA")
+        out_prefix_sub <- paste0(outdir, "RNA/", contrast_id_sub)
+        title_sub <- paste0(contrast_id_sub, n_msg, " (Shared)")
+        
+        if (!is.null(grp_contrast_paired)) print(paste0("Evaluating RNA (Shared): ", grp_contrast_paired))
+        eval_contrast(fit_paired, grp_contrast_paired, out_prefix_sub, title_sub, log_file)
 
-    # B) ALL RNAs (Uses fit_rna & design.rna)
-    grp_contrast_full <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design.rna)")
-    contrast_id_full <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA_full")
-    out_prefix_full <- paste0(outdir, "RNA/", contrast_id_full)
-    title_full <- paste0(contrast_id_full, n_msg, " (All)")
-    
-    eval_contrast(fit_rna, grp_contrast_full, out_prefix_full, title_full, log_file)
+        # 2. Independent Model -> Suffix "_RNA_full"
+        grp_contrast_full <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design.rna)")
+        contrast_id_full <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA_full")
+        out_prefix_full <- paste0(outdir, "RNA/", contrast_id_full)
+        title_full <- paste0(contrast_id_full, n_msg, " (All)")
+        
+        eval_contrast(fit_rna, grp_contrast_full, out_prefix_full, title_full, log_file)
+        
+    } else {
+        # --- CASE B: RNA-ONLY MODE ---
+        # Only output one file with suffix "_RNA", derived from the Independent (fit_rna) model.
+        grp_contrast_full <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design.rna)")
+        contrast_id_full <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA") # Simple Suffix
+        out_prefix_full <- paste0(outdir, "RNA/", contrast_id_full)
+        title_full <- paste0(contrast_id_full, n_msg, " (RNA Only)")
+        
+        eval_contrast(fit_rna, grp_contrast_full, out_prefix_full, title_full, log_file)
+    }
   }
 
   # --- 2. Ribo Contrasts ---
-  # Only use fit_paired (Standard)
   if (length(unlist(grp_ribo)) == 2) {
     n_msg <- paste0("    (n = ", n_ribo[[1]], " / ", n_ribo[[2]], ")")
     
@@ -374,7 +450,7 @@ evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired
     eval_contrast(fit_paired, grp_contrast, out_prefix, title, log_file)
   }
   
-  # --- 3. dTE Contrast (Uses fit_paired) ---
+  # --- 3. dTE Contrast ---
   if ((length(unlist(grp_ribo)) == 2) && (length(unlist(grp_rna)) == 2)) {
     left_cmd <- paste0("(", grp_ribo[[1]], " - ", grp_rna[[1]], ")")
     right_cmd <- paste0("(", grp_ribo[[2]], " - ", grp_rna[[2]], ")")
@@ -790,6 +866,7 @@ option_list <- list(
     make_option(c("-u", "--outer_join"    ), type="logical"  , default=FALSE                , metavar="boolean", help="Outer join RNA and Ribo reads, fill NAs with 0 expression."                                                     ),
     make_option(c("-l", "--cores"         ), type="integer"  , default=1                    , metavar="integer", help="Number of cores."                                                                       ),
     make_option(c("-a", "--contrast_cols" ), type="character", default="treatment_id"               , metavar="character", help="Column names from which contrasts are derived; separated by commas."          ),
+    make_option(c("-O", "--one_vs_all"), type="logical", default=FALSE, metavar="boolean", help="If TRUE, also run One-vs-All contrasts for every group detected."),
     make_option(c("-p", "--plot_ids"), type="logical", default=FALSE, metavar="boolean", help="Plot Smart IDs instead of replicate numbers in PCA/MDS."),
     make_option(c("-e", "--no_batch_factor"), type="logical" , default=FALSE,               , metavar="boolean", help="Don't create factors for batch date. Can be necessary to achieve full rank for some settings")
 )
@@ -1054,6 +1131,8 @@ if (sum(mask) > 0) {
 counts <- counts[mask == FALSE,]
 
 # Import and process metadata --------------------------------------------------------------
+
+# 1. CLEAN & DEDUPLICATE METADATA
 meta.table <- (
   meta.table
   |> group_by(smart_id, data_type)
@@ -1064,88 +1143,51 @@ meta.table <- (
   |> slice_sample(n = 1)
   |> ungroup()
 )
-# Remove Subgroup info of samples with only a single instance of that contrast (stratified over R-seq data)
-# Iterate samples from lowest level to highest
-for (contrast in contrast_grps) {
-  # Count the number of '.' in each string
-  dot_counts <- sapply(meta.table[[contrast]], function(x) {
-    count <- gregexpr("\\.", x)[[1]]
-    
-    # Check for no matches, where gregexpr returns -1
-    ifelse(count[1] == -1, 0, length(count))
-  })
-  # Sort entries based on the number of '.' in descending order
-  sorted_entries <- unique(meta.table[order(dot_counts, decreasing = TRUE),][[contrast]])
-  for (entry in sorted_entries) {
-    for (type in unique(meta.table$seq_type)) {
-        mask <- (startsWith(meta.table[[contrast]], entry)) & (meta.table$seq_type %in% type)
-        smart_ids <- unique(meta.table[mask,]$smart_id)
-        if ((length(smart_ids) > 0) & (length(smart_ids) < 2)) {
-          # If the entry contains a '.', rename the group to its supergroup part
-          if (grepl("\\.", entry)) {
-            # Logic to rename the group to its supergroup
-            new_group <- sub("\\.[^.]*$", "", entry)  # Remove the last segment after the last dot
-            meta.table[mask, contrast] <- new_group
-            cat("Renaming group:", entry, "to supergroup:", new_group, "because of low sample count\n", file = log_file, append = TRUE)
-          } else {
-            # Otherwise, remove samples
-            meta.table <- meta.table[!mask, ]
-            # Identify the indices of the columns to remove
-            indices_to_remove <- which(colnames(counts) %in% paste0(smart_ids, "_", type))
-            counts <- counts[, -indices_to_remove]
-            cat("Removing samples with group:", entry, ": ", smart_ids, "because of low sample count\n", file = log_file, append = TRUE)
-          }
-        }
-    }
-  }
-}
 
-# Dictionary to store combinations
+# -----------------------------------------------------------------------------
+# 2. DICTIONARY GENERATION & COLUMN SPLITTING
+# -----------------------------------------------------------------------------
+cat("Parsing contrast groups and splitting hierarchies...\n", file=log_file, append=TRUE)
+
 comb_dict <- list()
 uniq_dict <- list()
 num_col_splits <- list()
 
-meta_cols <- unique(c("location_id", "disease_id", "treatment_id", contrast_grps))
-# Combine contrast group columns
-if (length(contrast_grps) > 1) {
-  meta.table[[contrast_col]] <- do.call(paste, c(meta.table[contrast_grps], sep=":"))
-  meta_cols <- unique(c(meta_cols, contrast_grps, contrast_col))
-} 
-# Split columns into subclasses
-for (column in meta_cols) {
-  # For replace all : with . (only possible for treatment_id's)
-  # TODO figure out how to use combinatorial effects more smartly
+# Helper for handling combined columns
+for (column in contrast_grps) {
+  # Handle combined factors (Treat:Time -> Treat_and_Time)
   if (!is.null(meta.table[[column]]) && length(meta.table[[column]]) > 0) {
     meta.table[[column]] <- gsub(":", "_and_", meta.table[[column]])
-  } else {
-    warning(sprintf("Column '%s' is missing or empty in meta.table. Skipping processing for this column.", column))
-    next
   }
-  # Get max splits
+  
+  # Calculate depth of hierarchy (dots)
   max_splits <- max(str_count(meta.table[[column]], "\\.") + 1)
   num_col_splits[[column]] <- max_splits
   column_names <- paste0(column, ".", seq_len(max_splits))
-  # Create new columns with increasing length of the original string
+  
+  # Create the split columns in meta.table immediately
   for (i in seq_len(max_splits)) {
     meta.table[[column_names[i]]] <- sapply(strsplit(meta.table[[column]], "\\."), function(x) {
       paste(x[1:i], collapse = ".")
     })
   }
-  # For the original column, ensure all elements have same number of subclasses by adding as many .NA
+  # normalize main column
   meta.table[[column]] <- sapply(strsplit(meta.table[[column]], "\\."), function(x) {
     paste(c(x, rep("NA", max_splits - length(x))), collapse = ".")
   })
-  # Get and store valid combinations
+  
+  # Log what we found
+  cat(paste0("  Column '", column, "': Max Depth = ", max_splits, "\n"), file=log_file, append=TRUE)
+  cat(paste0("  Unique Groups found: ", paste(unique(meta.table[[column]]), collapse=", "), "\n"), file=log_file, append=TRUE)
+
+  # Build Contrast Combinations
   combs <- list()
   for (i in seq_len(max_splits)) {
     vals <- unique(meta.table[[column_names[i]]])
-    # Get rid of entries with ".NA"
     vals <- vals[!grepl("\\.NA", vals)]
     if (length(vals) > 1) {
       groups <- combn(vals, 2, simplify)
-      # eval orthogonal combs (e.g. 1_and_a vs 2_and_b -> 1 vs 2, a vs. b)
       if (any(grep("_and_", meta.table[[column]]))) {
-        # TODO hardcoded for a max of two combinatories factors, not for more
         orth_vals_1 <- unique(sapply(strsplit(meta.table[[column]], "_and_"), `[`, 1))
         orth_vals_2 <- unique(sapply(strsplit(meta.table[[column]], "_and_"), `[`, 2))
         orth_groups_1 <- combn(orth_vals_1, 2, simplify)
@@ -1165,288 +1207,253 @@ for (column in meta_cols) {
   }
   comb_dict[[column]] <- combs
   uniq_dict[[column]] <- unique(unlist(combs))
-  # Print warning if no combinations found
-  # if (length(combs) == 0) {
-  #   warning(sprintf("No valid combinations found for suggested column name '%s'.", column))
-  # }
-}
-# Print the combinations and unique entries
-cat("Combinations and unique entries for each column:\n", file = log_file, append = TRUE)
-for (col in names(comb_dict)) {
-  cat(str_c(col, ":\n"), file = log_file, append = TRUE)
-  cat(paste0(" - ", paste(comb_dict[[col]], collapse = "\n - ")), "\n", file = log_file, append = TRUE)
-  cat(str_c("Value counts: ", paste(names(table(meta.table[[col]])), table(meta.table[[col]]), sep = "=", collapse = ", ")), "\n", file = log_file, append = TRUE)
-}
-# TODO: validate presence of both data types
-# Report on sample_ids filtered out because of missing data
-# Identify filtered out sample_ids due to missing count data
-filtered_sample_ids <- paste0(meta.table$smart_id, "_", meta.table$seq_type)
-filtered_sample_ids <- filtered_sample_ids[!filtered_sample_ids %in% colnames(counts)]
-if (length(filtered_sample_ids) > 0) {
-  cat("Filtered out sample_ids due to missing count data:\n", file = log_file, append = TRUE)
-  for (sid in filtered_sample_ids) {
-    cat(" - ", sid, "\n", file = log_file, append = TRUE)
-  }
 }
 
-# Generate column names according to the maximum number of splits
-if (!"sample_type" %in% colnames(meta.table)) {
-  meta.table$sample_type <- "NA"
-}
-if (!"batch_date" %in% colnames(meta.table)) {
-  meta.table$batch_date <- "NA"
-}
-meta.samples <- (
-  meta.table
-  |> filter(
-    counts_col %in% colnames(counts),
-    )
-  |> select(
-    smart_id,
-    sample_type,
-    any_of(unlist(lapply(meta_cols, function(col) grep(paste0("^", col), colnames(meta.table), value = TRUE)))),
-    rep = replicate_num,
-    control = test_or_control,
-    batch_date,
-    counts_col,
-    seq_type
-  )
-  |> mutate(
-    across(where(is.character), as.factor),
-    batch_date=as.factor(batch_date)
-  )
-  |> replace_na(list(rep = 1))
-  |> unique()
-)
-
-# Create design formula and sample groups  ----------------------------
-f = ("~0 + group")
-# Check with meta.samples wether column exists
-contrast_cols <- list()
-for (col in contrast_grps) {
-  # Find all columns that start with "disease_id." followed by a number
-  # We look at meta.table first to ensure we catch all potential splits
-  possible_cols <- grep(paste0("^", col, "\\.\\d+$"), colnames(meta.table), value = TRUE)
+# -----------------------------------------------------------------------------
+# 3. INTELLIGENT GROUPING (Renaming sparse subgroups)
+# -----------------------------------------------------------------------------
+for (contrast in contrast_grps) {
+  dot_counts <- sapply(meta.table[[contrast]], function(x) {
+    count <- gregexpr("\\.", x)[[1]]
+    ifelse(count[1] == -1, 0, length(count))
+  })
+  sorted_entries <- unique(meta.table[order(dot_counts, decreasing = TRUE),][[contrast]])
   
-  if (length(possible_cols) > 0) {
-     # Extract the numbers (e.g. 1, 2, 3)
-     suffixes <- as.integer(sub(paste0("^", col, "\\."), "", possible_cols))
-     max_suffix <- max(suffixes, na.rm = TRUE)
-     
-     # Reconstruct the list in order: disease_id.1, disease_id.2, disease_id.3
-     ordered_cols <- paste0(col, ".", 1:max_suffix)
-     
-     # Only keep columns that actually exist in meta.samples
-     valid_cols <- ordered_cols[ordered_cols %in% colnames(meta.samples)]
-     contrast_cols <- append(contrast_cols, valid_cols)
-  }
-}
-contrast_cols <- unlist(contrast_cols)
-
-select_cols <- c("counts_col", contrast_cols, "seq_type")
-# evaluate location_id, source_id, disease_id, treatment_id
-common_cols <- c("source_id", "location_id", "disease_id", "treatment_id")
-# exclude contrast_cols
-common_cols <- common_cols[!common_cols %in% contrast_cols]
-# include to selected columns if more than one unique value
-for (col in common_cols) {
-  if (col %in% colnames(meta.samples)) {
-    if (length(unique(meta.samples[[col]])) > 1) {
-      select_cols <- c(select_cols, col)
+  for (entry in sorted_entries) {
+    for (type in unique(meta.table$seq_type)) {
+        mask <- (startsWith(meta.table[[contrast]], entry)) & (meta.table$seq_type %in% type)
+        smart_ids <- unique(meta.table[mask,]$smart_id)
+        
+        if ((length(smart_ids) > 0) & (length(smart_ids) < 2)) {
+          if (grepl("\\.", entry)) {
+            new_group <- sub("\\.[^.]*$", "", entry) 
+            meta.table[mask, contrast] <- new_group
+            cat("Optimization: Renaming sparse subgroup:", entry, "->", new_group, "\n", file = log_file, append = TRUE)
+          } else {
+            cat("Optimization: Group", entry, "has low replicates (n=1). Keeping for global variance.\n", file = log_file, append = TRUE)
+          }
+        }
     }
   }
 }
 
-
-# ensure batch_date and seq_type are not perfectly correlated
-corr_factor <- suppressWarnings({
-  cf <- cor(as.numeric(meta.samples$seq_type), as.numeric(meta.samples$batch_date))
-  if (is.na(cf)) 0 else cf
-})
-if (!opt$no_batch_factor && length(unique(meta.samples$batch_date)) > 1 && abs(corr_factor) < 0.99) {
-  # Replace values that appear only once with "NaN"
-  # batch_counts <- table(meta.samples$batch_date)
-  # single_batches <- names(batch_counts[batch_counts == 1])
-  # meta.samples$batch_date <- as.character(meta.samples$batch_date)
-  # meta.samples$batch_date[meta.samples$batch_date %in% single_batches] <- "NaN"
-  # meta.samples$batch_date <- as.factor(meta.samples$batch_date)
-  cat("batch_date:\n", file = log_file, append = TRUE)
-  cat(str_c("Value counts: ", paste(names(table(meta.table[["batch_date"]])), table(meta.table[["batch_date"]]), sep = "=", collapse = ", ")), "\n", file = log_file, append = TRUE)
-  select_cols <- c(select_cols, "batch_date")
-  f = paste0(f, " + batch_date")
-}
-if (length(unique(meta.samples$sample_type)) > 1) {
-  cat("sample_type:\n", file = log_file, append = TRUE)
-  cat(str_c("Value counts: ", paste(names(table(meta.table[["sample_type"]])), table(meta.table[["sample_type"]]), sep = "=", collapse = ", ")), "\n", file = log_file, append = TRUE)
-  select_cols <- c(select_cols, "sample_type")
-  f = paste0(f, " + sample_type")
-}
+# -----------------------------------------------------------------------------
+# 4. PREPARE FULL DATASET
+# -----------------------------------------------------------------------------
 # Select relevant columns 
-meta.design <- (
-  meta.samples 
-  |> select(any_of(unlist(select_cols)))
-  # |> mutate(group = paste0(apply(meta.samples[, unlist(contrast_cols)], 1, paste, collapse = "__"), "__", seq_type))
-  |> mutate(group = paste0(apply(meta.samples[, unlist(contrast_cols)], 1, paste, collapse = "_and_"), "__", seq_type))
-  |> select(-all_of(unlist(contrast_cols)))
-  |> column_to_rownames("counts_col")
+meta.samples <- (
+  meta.table
+  |> filter(counts_col %in% colnames(counts))
+  |> select(
+    smart_id,
+    any_of(c("sample_type", "batch_date")),
+    # This grep now correctly finds the .1, .2 columns created above
+    any_of(unlist(lapply(contrast_grps, function(col) grep(paste0("^", col), colnames(meta.table), value = TRUE)))),
+    rep = replicate_num,
+    control = test_or_control,
+    counts_col,
+    seq_type
+  )
+  |> mutate(across(where(is.character), as.factor))
+  |> replace_na(list(rep = 1))
+  |> distinct()
 )
 
-## DEBUG ##
-## Filter out rows without disease type MBL or CTRL
-# meta.design <- meta.design |> filter(grepl("MBL|PINE", meta.design$disease_id))
-# meta.samples <- meta.samples |> filter(grepl("MBL|PINE", meta.samples$disease_id))
+# Align Counts
+counts <- counts[, as.character(meta.samples$counts_col), drop = FALSE]
 
-# Rearrage counts according to meta.samples file
-counts <- counts[,as.character(meta.samples$counts_col)]
-
-# Combine contrast_grps and seq_type
-design <- model.matrix(as.formula(f), data=data.frame(meta.design))
-cat("\n--- DESIGN MATRIX COLUMN NAMES ---\n", file=log_file, append=TRUE)
-cat(paste(colnames(design), collapse="\n"), file=log_file, append=TRUE)
-# --- DEBUG END ---
-
-
-# write formula to text file
-write(f, file = str_c(opt$outdir, "formula.txt"))
-cat("\ngroup names:\n", colnames(design), "\n", file=log_file, append=TRUE)
-cat("\nformula:\n", f, "\n", file=log_file, append=TRUE)
-
-dim(counts)
-############### DEBUG
-# counts_test <- counts[,]
-# meta_test <- meta.design
-# meta_test$batch_date <- meta_test$batch
-
-# design <- model.matrix(as.formula(f), data=data.frame(meta_test))
-# # Compute the correlation matrix
-# corr_matrix <- cor(design)
-# # Find columns with high correlation
-# print(corr_matrix)
-# corr_indices <- which(abs(corr_matrix) > 0.9, arr.ind = TRUE)
-# print(corr_indices)
-# high_corr_indices <- corr_indices[corr_indices[, "row"] < corr_indices[, "col"], ]
-# print(high_corr_indices)
-
-# fig(str_c('/home/clauwaer/data/data_processing/VanHeesch_Collab/debug2'), 20, 20)
-# # Create the heatmap
-# pheatmap(corr_matrix, cluster_rows = FALSE, cluster_cols = FALSE,
-#          main = "Design Matrix Heatmap")
-# w()
-# fig(str_c('/home/clauwaer/data/data_processing/VanHeesch_Collab/debug'), 10, 10)
-# # Create the heatmap
-# pheatmap(design, cluster_rows = FALSE, cluster_cols = FALSE,
-#          main = "Design Matrix Heatmap")
-# w()
-# # #####################
-
-# create DGE object
-dge <- DGEList(counts=counts, samples=data.frame(meta.design))
-# Filter lowly expressed genes
-keep <- filterByExpr(dge)
-dge <- dge[keep, keep.lib.sizes = FALSE]
-# Calculate normalization factors
-dge <- calcNormFactors(dge, method="TMM")
-# Estimate dispersion
-dge <- estimateDisp(dge, design, min.row.sum=30)
-# split normalized count data according to RNA and Ribo samples:
-norm_counts_list <- list(RNA=dge[,meta.samples$seq_type == "RNA"], Ribo=dge[,meta.samples$seq_type == "Ribo"])
-# Save normalized count data separate for RNA and Ribo samples within the input directory of both, respectively
-for (i in seq_along(seq_types)) {
-  seq_type <- seq_types[i]
-  if (opt$tx_table_col == "transcript_id") {
-    prefix <- "no_agg" 
-  } else {
-    prefix <- "gene_agg"
-  }
-  logcpm_counts <- cpm(norm_counts_list[[seq_type]], normalized.lib.sizes = TRUE, log=TRUE, prior.count=1)
-  formatted_data <- rownames_to_column(data.frame(format(logcpm_counts, digits=3, nsmall = 3)), "Name")
-  write.table(formatted_data, file=str_c(opt$outdir, prefix, "_", seq_type, "_cpm_log_matrix.csv"), sep=",", row.names = FALSE, quote=FALSE)
+# Create Grouping Column
+if (length(contrast_grps) > 0) {
+    meta.samples <- meta.samples %>% 
+        mutate(group = paste0(apply(meta.samples[, unlist(contrast_grps), drop=FALSE], 1, paste, collapse = "_and_"), "__", seq_type))
+} else {
+    stop("No valid contrast columns found in metadata.")
 }
 
-# --- 1. Fit the Paired/Expanded Model (Used for dTE, Ribo, and "Subset" RNA) ---
+# Define Design Formula (ROBUST)
+f = "~0 + group"
+
+# Helper to strictly check for variation
+has_var <- function(vec) { length(unique(as.character(vec))) > 1 }
+
+if (!opt$no_batch_factor && "batch_date" %in% colnames(meta.samples) && has_var(meta.samples$batch_date)) {
+    f = paste0(f, " + batch_date")
+    cat("Adding 'batch_date' to design model.\n", file=log_file, append=TRUE)
+}
+
+if ("sample_type" %in% colnames(meta.samples) && has_var(meta.samples$sample_type)) {
+    f = paste0(f, " + sample_type")
+    cat("Adding 'sample_type' to design model.\n", file=log_file, append=TRUE)
+}
+
+# Create Design Matrix
+meta.design <- meta.samples %>% column_to_rownames("counts_col")
+design <- model.matrix(as.formula(f), data=data.frame(meta.design))
+
+# -----------------------------------------------------------------------------
+# 5. NORMALIZE & QC
+# -----------------------------------------------------------------------------
+cat("Constructing DGE Object with ALL samples...\n", file=log_file, append=TRUE)
+cat(paste0("Formula: ", f, "\n"), file=log_file, append=TRUE)
+
+dge <- DGEList(counts=counts, samples=data.frame(meta.design))
+keep <- filterByExpr(dge, design)
+dge <- dge[keep, , keep.lib.sizes = FALSE]
+dge <- calcNormFactors(dge, method="TMM")
+
+# --- SAVE NORMALIZED MATRICES ---
+cat("Saving normalized LogCPM matrices...\n", file=log_file, append=TRUE)
+seq_types_present <- intersect(c("RNA", "Ribo"), unique(dge$samples$seq_type))
+
+for (st in seq_types_present) {
+    # Subset DGE for this type
+    sub_dge <- dge[, dge$samples$seq_type == st, keep.lib.sizes=FALSE]
+    if (ncol(sub_dge) > 0) {
+        logcpm_counts <- cpm(sub_dge, normalized.lib.sizes = TRUE, log=TRUE, prior.count=1)
+        formatted_data <- tibble::rownames_to_column(data.frame(format(logcpm_counts, digits=3, nsmall = 3)), "Name")
+        
+        out_file <- paste0(opt$outdir, st, "_cpm_log_matrix.csv")
+        write.table(formatted_data, file=out_file, sep=",", row.names = FALSE, quote=FALSE)
+        cat(paste0("  Saved: ", out_file, "\n"), file=log_file, append=TRUE)
+    }
+}
+
+# --- GENERATE QC PLOTS ---
+cat("Generating QC Plots...\n", file=log_file, append=TRUE)
+qc_cols <- unique(c(contrast_grps, "treatment_id", "source_id", "disease_id"))
+qc_cols <- qc_cols[qc_cols %in% colnames(dge$samples)]
+
+qc_types <- list(All = unique(dge$samples$seq_type))
+if ("RNA" %in% dge$samples$seq_type) qc_types$RNA <- "RNA"
+if ("Ribo" %in% dge$samples$seq_type) qc_types$Ribo <- "Ribo"
+
+for (lbl in names(qc_types)) {
+    mask <- dge$samples$seq_type %in% qc_types[[lbl]]
+    if (sum(mask) >= 3) { 
+        sub_dge <- dge[, mask]
+        sub_meta <- dge$samples[mask, ]
+        eval_MDS(sub_dge, sub_meta, qc_cols, opt$outdir, lbl, opt$plot_ids)
+        eval_PCA(sub_dge, sub_meta, qc_cols, opt$outdir, lbl, opt$plot_ids)
+        log_cpm <- cpm(sub_dge, log=TRUE, normalized.lib.sizes=TRUE)
+        eval_heatmap(log_cpm, sub_meta, qc_cols, opt$outdir, lbl)
+        eval_gene_clusters(log_cpm, sub_meta, qc_cols, opt$outdir, lbl)
+    }
+}
+
+# -----------------------------------------------------------------------------
+# 6. FILTER CONTRASTS & FIT MODELS
+# -----------------------------------------------------------------------------
+has_reps <- function(grp_name, meta, col_name, min_n=2) {
+    num_dots <- str_count(grp_name, "\\.") + 1
+    target_col <- paste0(col_name, ".", num_dots)
+    
+    if (target_col %in% colnames(meta)) {
+        sub_meta <- meta[meta[[target_col]] == grp_name, ]
+        
+        # FIX: Check counts PER SEQ TYPE. 
+        # Both RNA and Ribo must have >= 2 for the model to work properly for dTE
+        counts_by_type <- table(sub_meta$seq_type)
+        if (length(counts_by_type) > 0 && all(counts_by_type >= min_n)) {
+            return(TRUE)
+        }
+    }
+    return(FALSE)
+}
+
+cat("Filtering contrast lists for sufficient replicates...\n", file=log_file, append=TRUE)
+
+# Filter Combinations
+valid_comb <- list()
+for (tup in comb_dict[[contrast_col]]) {
+    if (has_reps(tup[1], meta.design, contrast_col) && has_reps(tup[2], meta.design, contrast_col)) {
+        valid_comb <- append(valid_comb, list(tup))
+    } else {
+        cat(paste0("Skipping contrast '", paste(tup, collapse=" vs "), "' (insufficient replicates)\n"), file=log_file, append=TRUE)
+    }
+}
+comb_dict[[contrast_col]] <- valid_comb
+
+# Filter Uniques
+valid_uniq <- list()
+for (val in uniq_dict[[contrast_col]]) {
+    if (has_reps(val, meta.design, contrast_col)) {
+        valid_uniq <- append(valid_uniq, list(val))
+    }
+}
+uniq_dict[[contrast_col]] <- valid_uniq
+
+# STOP Check
+num_valid_contrasts <- length(comb_dict[[contrast_col]]) + length(uniq_dict[[contrast_col]])
+if (num_valid_contrasts == 0) {
+    cat("\n----------------------------------------------------------------\n", file=log_file, append=TRUE)
+    cat("NO VALID CONTRASTS FOUND: All requested groups have insufficient replicates (n < 2 per SeqType).\n", file=log_file, append=TRUE)
+    cat("QC plots have been generated. Exiting successfully.\n", file=log_file, append=TRUE)
+    cat("----------------------------------------------------------------\n", file=log_file, append=TRUE)
+    quit(save="no", status=0)
+}
+
+# Fit Models
+cat("Valid contrasts found. Fitting GLM models...\n", file=log_file, append=TRUE)
+dge <- estimateDisp(dge, design, min.row.sum=30)
 fit_paired <- glmQLFit(dge, design)
 
-# --- 2. Fit the Full RNA-Only Model (Used for "Full" RNA) ---
-# Filter metadata to only RNA samples
-meta.rna <- meta.design[meta.design$seq_type == "RNA", ]
-# Drop unused factor levels
+# Fit Independent RNA Model
+meta.rna <- meta.design[meta.design$seq_type == "RNA", , drop=FALSE]
 meta.rna <- droplevels(meta.rna)
-
-# Re-evaluate the formula for the RNA subset
-# We cannot blindly use 'f' because the RNA subset might lack specific batches or sample types
 f_rna <- "~0 + group"
+if ("batch_date" %in% colnames(meta.rna) && has_var(meta.rna$batch_date)) f_rna <- paste0(f_rna, " + batch_date")
+if ("sample_type" %in% colnames(meta.rna) && has_var(meta.rna$sample_type)) f_rna <- paste0(f_rna, " + sample_type")
 
-# Dynamically add batch_date if valid
-if ("batch_date" %in% colnames(meta.rna) && nlevels(meta.rna$batch_date) > 1) {
-    f_rna <- paste0(f_rna, " + batch_date")
-}
-
-# Dynamically add sample_type if valid
-if ("sample_type" %in% colnames(meta.rna) && nlevels(meta.rna$sample_type) > 1) {
-    f_rna <- paste0(f_rna, " + sample_type")
-}
-
-cat("Constructing Full RNA-only model...\n", file = log_file, append = TRUE)
-cat(paste0("RNA Formula: ", f_rna, "\n"), file = log_file, append = TRUE)
-
-# Ensure we use the raw 'rna_counts' (loaded at top of script)
-dge_rna <- DGEList(counts=rna_counts[, rownames(meta.rna)], samples=data.frame(meta.rna))
-
-cat(paste0("Dimensions: ", nrow(dge_rna), " genes, ", ncol(dge_rna), " samples.\n"), file = log_file, append = TRUE)
-
-# Build RNA-specific design matrix using the dynamic formula
+dge_rna <- DGEList(counts=counts[, rownames(meta.rna)], samples=data.frame(meta.rna))
 design.rna <- model.matrix(as.formula(f_rna), data=data.frame(meta.rna))
-
-# Standard edgeR pipeline for the RNA set
-keep_rna <- filterByExpr(dge_rna, design.rna)
-dge_rna <- dge_rna[keep_rna, keep.lib.sizes = FALSE]
-dge_rna <- calcNormFactors(dge_rna, method="TMM")
-dge_rna <- estimateDisp(dge_rna, design.rna, min.row.sum=30)
+dge_rna <- estimateDisp(dge_rna, design.rna)
 fit_rna <- glmQLFit(dge_rna, design.rna)
 
+# Resume Execution
 dge_idxs <- match(rownames(dge$samples), meta.samples$counts_col)
 dge.meta <- meta.samples[dge_idxs,]
 
-# Subset samples based on condition
-if (length(seq_types) == 2) {
-  seq_labels <- c("All", "Ribo", "RNA")
-  seq_groups  <- list(c("RNA", "Ribo"), c("Ribo"), c("RNA"))
-} else {
-  seq_labels <- seq_types
-  seq_groups <- seq_types
-}
+# -----------------------------------------------------------------------------
+# 6. EXECUTE CONTRASTS
+# -----------------------------------------------------------------------------
+cat("Executing contrasts...\n", file=log_file, append=TRUE)
 
-# Evaluate design to get metadata of interest
-meta_of_interest <- colnames(meta.design)[!colnames(meta.design) %in% c("group", "seq_type")]
-meta_of_interest <- c(contrast_grps, meta_of_interest)
-for (i in seq_along(seq_labels)) {
-  sample_mask <- dge.meta$seq_type %in% seq_groups[[i]]
-  samples_to_keep <- rownames(dge$samples[sample_mask,])
-  
-  # PASS opt$plot_ids HERE
-  eval_MDS(dge[,samples_to_keep], dge.meta[sample_mask,], meta_of_interest, opt$outdir, seq_labels[i], opt$plot_ids)
-  eval_PCA(dge[,samples_to_keep], dge.meta[sample_mask,], meta_of_interest, opt$outdir, seq_labels[i], opt$plot_ids)
-  
-  eval_heatmap(cpm(dge[,samples_to_keep], normalized.lib.sizes = TRUE, log = TRUE, prior.count = 1), dge.meta[sample_mask,], meta_of_interest, opt$outdir, seq_labels[i])
-  eval_gene_clusters(cpm(dge[,samples_to_keep], normalized.lib.sizes = TRUE, log = TRUE, prior.count = 1), dge.meta[sample_mask,], meta_of_interest, opt$outdir, seq_labels[i])
-}
-## DEBUG  filter non-MBL disease_ids
-# filtered_dict <- uniq_dict$disease_id[grep("MBL|PINE", uniq_dict$disease_id)]
-# bplapply(filtered_dict, function(val) {evaluate_unique_contrast(dge.meta, val, contrast_col, fit, opt$outdir, log_file)})
-
-# # filter comb_dict for MBL and PINE only, comb_dict is a list of lists
-# filtered_dict <- Filter(function(x) all(grepl("MBL.|PINE", x)), comb_dict$disease_id)
-# # append tuple ("MBL", "PINE") if not already present
-# if (!any(sapply(filtered_dict, function(x) all(sort(x) == c("MBL", "PINE"))))) {
-#   filtered_dict <- append(filtered_dict, list(c("MBL", "PINE")))
-# } 
-# bplapply(filtered_dict, function(val) {evaluate_combination_contrast(dge.meta, val, contrast_col, fit, opt$outdir, log_file)})
-
-# Note: evaluate_unique_contrast usually focuses on TE, so fit_paired is sufficient.
+# Execute Unique Contrasts (TE mostly, uses Paired Fit)
 bplapply(uniq_dict[[contrast_col]], function(val) {
     evaluate_unique_contrast(dge.meta, val, contrast_col, fit_paired, opt$outdir, log_file)
 })
 
+# Execute Combination Contrasts (DE & dTE, uses Paired + RNA Independent Fit)
 bplapply(comb_dict[[contrast_col]], function(val) {
     evaluate_combination_contrast(dge.meta, val, contrast_col, fit_paired, fit_rna, opt$outdir, log_file)
 })
+
+# -----------------------------------------------------------------------------
+# 7. EXECUTE ONE-VS-ALL (Optional)
+# -----------------------------------------------------------------------------
+if (opt$one_vs_all) {
+    cat("\nExecuting One-vs-All Contrasts...\n", file=log_file, append=TRUE)
+    
+    # We iterate over every valid unique group found
+    # (These have already been filtered for replicates in Step 6)
+    bplapply(uniq_dict[[contrast_col]], function(val) {
+        # Check if we should run OvA for this group
+        # (It must define a subset, i.e., not encompass the entire dataset)
+        is_subset <- sum(startsWith(as.character(dge.meta[[contrast_col]]), val)) < nrow(dge.meta)
+        
+        if (is_subset) {
+            exec_one_vs_all(
+                dge.meta, 
+                target_group = val, 
+                contrast_col = contrast_col, 
+                fit_paired = fit_paired, 
+                fit_rna = fit_rna, 
+                has_ribo_data = (length(qc_types$Ribo) > 0), # Check if Ribo exists
+                outdir = opt$outdir, 
+                log_file = log_file
+            )
+        }
+    })
+}
+
+cat("Analysis complete.\n", file=log_file, append=TRUE)
