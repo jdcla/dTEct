@@ -866,7 +866,7 @@ option_list <- list(
     make_option(c("-u", "--outer_join"    ), type="logical"  , default=FALSE                , metavar="boolean", help="Outer join RNA and Ribo reads, fill NAs with 0 expression."                                                     ),
     make_option(c("-l", "--cores"         ), type="integer"  , default=1                    , metavar="integer", help="Number of cores."                                                                       ),
     make_option(c("-a", "--contrast_cols" ), type="character", default="treatment_id"               , metavar="character", help="Column names from which contrasts are derived; separated by commas."          ),
-    make_option(c("-O", "--one_vs_all"), type="logical", default=FALSE, metavar="boolean", help="If TRUE, also run One-vs-All contrasts for every group detected."),
+    make_option(c("-O", "--one_vs_all"), type="logical", default=TRUE, metavar="boolean", help="If TRUE, also run One-vs-All contrasts for every group detected."),
     make_option(c("-p", "--plot_ids"), type="logical", default=FALSE, metavar="boolean", help="Plot Smart IDs instead of replicate numbers in PCA/MDS."),
     make_option(c("-e", "--no_batch_factor"), type="logical" , default=FALSE,               , metavar="boolean", help="Don't create factors for batch date. Can be necessary to achieve full rank for some settings")
 )
@@ -1247,7 +1247,7 @@ meta.samples <- (
   |> select(
     smart_id,
     any_of(c("sample_type", "batch_date")),
-    # This grep now correctly finds the .1, .2 columns created above
+    # Capture all hierarchy columns correctly
     any_of(unlist(lapply(contrast_grps, function(col) grep(paste0("^", col), colnames(meta.table), value = TRUE)))),
     rep = replicate_num,
     control = test_or_control,
@@ -1262,18 +1262,45 @@ meta.samples <- (
 # Align Counts
 counts <- counts[, as.character(meta.samples$counts_col), drop = FALSE]
 
-# Create Grouping Column
+# Create Grouping Column (FIXED)
 if (length(contrast_grps) > 0) {
+    
+    grouping_cols <- unlist(lapply(contrast_grps, function(col) {
+        # Find hierarchy columns (col.1, col.2, etc.)
+        hier_cols <- grep(paste0("^", col, "\\.[0-9]+$"), colnames(meta.samples), value=TRUE)
+        
+        if (length(hier_cols) > 0) {
+             # CASE A: Hierarchy Found
+             # Sort numerically (.1, .2, .3)
+             extract_num <- function(x) as.numeric(sub(paste0("^", col, "\\."), "", x))
+             hier_cols <- hier_cols[order(extract_num(hier_cols))]
+             
+             # FIX: Return ONLY hierarchy columns. Do NOT append the main 'col'.
+             return(hier_cols)
+        } else {
+             # CASE B: No Hierarchy (Flat group)
+             # Use the original column name
+             return(col)
+        }
+    }))
+    
+    # Filter to ensure they exist in this specific subset
+    grouping_cols <- intersect(grouping_cols, colnames(meta.samples))
+    
+    # Construct Group ID
     meta.samples <- meta.samples %>% 
-        mutate(group = paste0(apply(meta.samples[, unlist(contrast_grps), drop=FALSE], 1, paste, collapse = "_and_"), "__", seq_type))
+        mutate(group = paste0(apply(meta.samples[, grouping_cols, drop=FALSE], 1, paste, collapse = "_and_"), "__", seq_type))
+        
+    cat(paste0("Grouping columns used: ", paste(grouping_cols, collapse=", "), "\n"), file=log_file, append=TRUE)
+    cat(paste0("Example Group ID: ", meta.samples$group[1], "\n"), file=log_file, append=TRUE)
+
 } else {
     stop("No valid contrast columns found in metadata.")
 }
 
-# Define Design Formula (ROBUST)
+# Define Design Formula
 f = "~0 + group"
 
-# Helper to strictly check for variation
 has_var <- function(vec) { length(unique(as.character(vec))) > 1 }
 
 if (!opt$no_batch_factor && "batch_date" %in% colnames(meta.samples) && has_var(meta.samples$batch_date)) {
