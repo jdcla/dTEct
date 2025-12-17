@@ -1213,26 +1213,42 @@ for (column in contrast_grps) {
 # 3. INTELLIGENT GROUPING (Renaming sparse subgroups)
 # -----------------------------------------------------------------------------
 for (contrast in contrast_grps) {
+  # Count depth of hierarchy
   dot_counts <- sapply(meta.table[[contrast]], function(x) {
     count <- gregexpr("\\.", x)[[1]]
     ifelse(count[1] == -1, 0, length(count))
   })
+  
+  # Process deepest hierarchies first
   sorted_entries <- unique(meta.table[order(dot_counts, decreasing = TRUE),][[contrast]])
   
   for (entry in sorted_entries) {
-    for (type in unique(meta.table$seq_type)) {
-        mask <- (startsWith(meta.table[[contrast]], entry)) & (meta.table$seq_type %in% type)
-        smart_ids <- unique(meta.table[mask,]$smart_id)
-        
-        if ((length(smart_ids) > 0) & (length(smart_ids) < 2)) {
-          if (grepl("\\.", entry)) {
-            new_group <- sub("\\.[^.]*$", "", entry) 
-            meta.table[mask, contrast] <- new_group
-            cat("Optimization: Renaming sparse subgroup:", entry, "->", new_group, "\n", file = log_file, append = TRUE)
-          } else {
-            cat("Optimization: Group", entry, "has low replicates (n=1). Keeping for global variance.\n", file = log_file, append = TRUE)
-          }
+    # Check this group across the ENTIRE table (both RNA and Ribo)
+    mask_all <- startsWith(meta.table[[contrast]], entry)
+    
+    # We only care if this group actually exists in the data
+    if (sum(mask_all) > 0) {
+      
+      # FIX: Use dplyr::count explicitly to avoid namespace collision with plyr/matrixStats
+      counts_by_type <- meta.table[mask_all, ] %>% dplyr::count(seq_type)
+      
+      # Identify if any present seq_type has < 2 replicates
+      # Note: We check if 'n' is less than 2. 
+      is_sparse <- any(counts_by_type$n < 2)
+      
+      if (is_sparse) {
+        if (grepl("\\.", entry)) {
+          # Collapse to parent group
+          new_group <- sub("\\.[^.]*$", "", entry) 
+          
+          # Apply rename to ALL rows matching this entry (RNA AND Ribo)
+          meta.table[mask_all, contrast] <- new_group
+          
+          cat("Optimization: Renaming sparse subgroup (consistent):", entry, "->", new_group, "\n", file = log_file, append = TRUE)
+        } else {
+          cat("Optimization: Group", entry, "has low replicates but is top-level. Keeping.\n", file = log_file, append = TRUE)
         }
+      }
     }
   }
 }
