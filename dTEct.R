@@ -583,100 +583,6 @@ construct_contrast_string <- function(contrast_vals , seq_type, meta, weight_dic
   return(paste0("(", grp_string, ")"))
 }
 
-eval_contrast <- function(fit, contrast, out_prefix, title, log_file) {
-    # Clean up contrast string for logs
-    cleaned_contrast <- sub("^makeContrasts\\(", "", sub(", levels=.*\\)$", "", contrast))
-    cat("Evaluating contrast ", title, " : ", cleaned_contrast, "\n", file = log_file, append = TRUE)
-    
-    # 1. Evaluate
-    lrt <- glmQLFTest(fit, contrast=eval(parse(text = contrast)))
-    res <- topTags(lrt, n=Inf)$table
-    
-    # 2. Preserve the original rowname as 'row_id' (This is the Translon/Transcript ID)
-    res <- res |> tibble::rownames_to_column('row_id')
-    
-    # --- DEDUPLICATION LOGIC (For RNA Subset) ---
-    is_rna_subset <- grepl("_RNA", out_prefix) && grepl("_subset", out_prefix)
-    
-    if (opt$feature_level == "transcript" && is_rna_subset && exists("tx.table")) {
-        # We need to deduplicate based on Transcript ID
-        # Join to get transcript_id
-        map_df <- tx.table[, c("translon_id", "transcript_id")]
-        
-        # Check if we can map
-        joined <- res %>% left_join(map_df, by=c("row_id"="translon_id"))
-        
-        if (sum(!is.na(joined$transcript_id)) > 0) {
-             res <- joined %>%
-                filter(!is.na(transcript_id)) %>%
-                # Group by Transcript and keep the row with lowest P-Value
-                group_by(transcript_id) %>%
-                slice_min(order_by = PValue, n = 1, with_ties = FALSE) %>%
-                ungroup() %>%
-                select(-transcript_id) # Remove temp column, we stick to row_id
-        }
-    }
-    # --------------------------------------------
-
-    # --- MAPPING LOGIC (Populate gene_id and gene_name) ---
-    if (exists("tx.table")) {
-        # Build a Master Map that connects ANY ID (Translon, Transcript, or Gene) to the Gene ID/Name
-        # This ensures that whether we used fit_paired (Translons) or fit_rna (Transcripts), 
-        # we always get the correct Gene ID.
-        
-        map_translon   <- tx.table %>% select(key_id = translon_id,   real_gene_id = gene_id, real_gene_name = gene_name)
-        map_transcript <- tx.table %>% select(key_id = transcript_id, real_gene_id = gene_id, real_gene_name = gene_name)
-        map_gene       <- tx.table %>% select(key_id = gene_id,       real_gene_id = gene_id, real_gene_name = gene_name)
-        
-        # Combine and remove empties
-        master_map <- bind_rows(map_translon, map_transcript, map_gene) %>% 
-                      filter(key_id != "" & !is.na(key_id)) %>%
-                      distinct(key_id, .keep_all = TRUE)
-        
-        # Join to results
-        res <- left_join(res, master_map, by=c("row_id" = "key_id"))
-        
-        # Fallback: If mapping failed (e.g. ID not in table), use row_id
-        res$gene_id   <- ifelse(is.na(res$real_gene_id) | res$real_gene_id == "", res$row_id, res$real_gene_id)
-        res$gene_name <- ifelse(is.na(res$real_gene_name) | res$real_gene_name == "", res$row_id, res$real_gene_name)
-        
-    } else {
-        # No table provided -> everything is just the row_id
-        res$gene_id   <- res$row_id
-        res$gene_name <- res$row_id
-    }
-    
-    # Create a composite label specifically for the Volcano Plot (e.g. "GAPDH (ENST...)")
-    # This helps distinguish isoforms visually without cluttering the main gene_name column
-    res$plot_label <- ifelse(res$gene_name == res$row_id, 
-                             res$gene_name, 
-                             paste0(res$gene_name, " (", res$row_id, ")"))
-
-    # 4. Final Formatting for CSV
-    # Strict column order requested: gene_id, gene_name, row_id, logFC...
-    out_table <- res |> 
-        select(gene_id, gene_name, row_id, logFC, logCPM, any_of("F"), PValue, FDR) |> 
-        arrange(PValue)
-
-    write.csv(out_table, paste0(out_prefix, ".csv"), quote=FALSE, row.names=FALSE)
-    
-    # 5. Plotting
-    ymax_vals <- -log10(res$PValue)[-log10(res$PValue) != Inf]
-    ymax <- if(length(ymax_vals) > 0) max(ymax_vals) + 1 else 10
-    
-    plot <- EnhancedVolcano(res,
-        lab = res$plot_label, # Use the composite label for the figure
-        x = "logFC",
-        y = "FDR",
-        pCutoff = 0.05,
-        FCcutoff = 1,
-        pointSize = 2.0,
-        labSize = 3.5,
-        ylim = c(0,ymax),
-        title = title 
-    )
-    gfig(plot, paste0(out_prefix, "_Volcano"), 30,30)
-}
 
 eval_contrast <- function(fit, contrast, out_prefix, title, log_file) {
     cleaned_contrast <- sub("^makeContrasts\\(", "", sub(", levels=.*\\)$", "", contrast))
@@ -868,7 +774,7 @@ option_list <- list(
     make_option(c("-a", "--contrast_cols" ), type="character", default="treatment_id"               , metavar="character", help="Column names from which contrasts are derived; separated by commas."          ),
     make_option(c("-O", "--one_vs_all"), type="logical", default=TRUE, metavar="boolean", help="If TRUE, also run One-vs-All contrasts for every group detected."),
     make_option(c("-p", "--plot_ids"), type="logical", default=FALSE, metavar="boolean", help="Plot Smart IDs instead of replicate numbers in PCA/MDS."),
-    make_option(c("-e", "--no_batch_factor"), type="logical" , default=FALSE,               , metavar="boolean", help="Don't create factors for batch date. Can be necessary to achieve full rank for some settings")
+    make_option(c("-e", "--no_batch_factor"), type="logical" , default=FALSE, metavar="boolean", help="Don't create factors for batch date. Can be necessary to achieve full rank for some settings")
 )
 
 opt_parser <- OptionParser(option_list=option_list)
@@ -1251,6 +1157,20 @@ for (contrast in contrast_grps) {
       }
     }
   }
+  
+  # Regenerate hierarchy columns after renaming
+  max_splits <- num_col_splits[[contrast]]
+  column_names <- paste0(contrast, ".", seq_len(max_splits))
+  
+  for (i in seq_len(max_splits)) {
+    meta.table[[column_names[i]]] <- sapply(strsplit(meta.table[[contrast]], "\\."), function(x) {
+      paste(x[1:i], collapse = ".")
+    })
+  }
+  # Re-normalize main column to ensure consistent NA padding
+  meta.table[[contrast]] <- sapply(strsplit(meta.table[[contrast]], "\\."), function(x) {
+    paste(c(x, rep("NA", max_splits - length(x))), collapse = ".")
+  })
 }
 
 # -----------------------------------------------------------------------------
