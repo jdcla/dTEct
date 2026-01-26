@@ -1286,9 +1286,11 @@ cat("Generating QC Plots...\n", file=log_file, append=TRUE)
 qc_cols <- unique(c(contrast_grps, "treatment_id", "source_id", "disease_id"))
 qc_cols <- qc_cols[qc_cols %in% colnames(dge$samples)]
 
-qc_types <- list(All = unique(dge$samples$seq_type))
-if ("RNA" %in% dge$samples$seq_type) qc_types$RNA <- "RNA"
-if ("Ribo" %in% dge$samples$seq_type) qc_types$Ribo <- "Ribo"
+present_types <- unique(dge$samples$seq_type)
+qc_types <- list()
+if (length(present_types) > 1) qc_types$All <- present_types
+if ("RNA" %in% present_types) qc_types$RNA <- "RNA"
+if ("Ribo" %in% present_types) qc_types$Ribo <- "Ribo"
 
 for (lbl in names(qc_types)) {
     mask <- dge$samples$seq_type %in% qc_types[[lbl]]
@@ -1361,16 +1363,19 @@ dge <- estimateDisp(dge, design, min.row.sum=30)
 fit_paired <- glmQLFit(dge, design)
 
 # Fit Independent RNA Model
+fit_rna <- NULL
 meta.rna <- meta.design[meta.design$seq_type == "RNA", , drop=FALSE]
-meta.rna <- droplevels(meta.rna)
-f_rna <- "~0 + group"
-if ("batch_date" %in% colnames(meta.rna) && has_var(meta.rna$batch_date)) f_rna <- paste0(f_rna, " + batch_date")
-if ("sample_type" %in% colnames(meta.rna) && has_var(meta.rna$sample_type)) f_rna <- paste0(f_rna, " + sample_type")
-
-dge_rna <- DGEList(counts=counts[, rownames(meta.rna)], samples=data.frame(meta.rna))
-design.rna <- model.matrix(as.formula(f_rna), data=data.frame(meta.rna))
-dge_rna <- estimateDisp(dge_rna, design.rna)
-fit_rna <- glmQLFit(dge_rna, design.rna)
+if (nrow(meta.rna) > 0) {
+    meta.rna <- droplevels(meta.rna)
+    f_rna <- "~0 + group"
+    if ("batch_date" %in% colnames(meta.rna) && has_var(meta.rna$batch_date)) f_rna <- paste0(f_rna, " + batch_date")
+    if ("sample_type" %in% colnames(meta.rna) && has_var(meta.rna$sample_type)) f_rna <- paste0(f_rna, " + sample_type")
+    
+    dge_rna <- DGEList(counts=counts[, rownames(meta.rna)], samples=data.frame(meta.rna))
+    design.rna <- model.matrix(as.formula(f_rna), data=data.frame(meta.rna))
+    dge_rna <- estimateDisp(dge_rna, design.rna)
+    fit_rna <- glmQLFit(dge_rna, design.rna)
+}
 
 # Resume Execution
 dge_idxs <- match(rownames(dge$samples), meta.samples$counts_col)
