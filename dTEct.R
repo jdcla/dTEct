@@ -1061,9 +1061,13 @@ num_col_splits <- list()
 
 # Helper for handling combined columns
 for (column in contrast_grps) {
-  # Handle combined factors (Treat:Time -> Treat_and_Time)
+  # Handle combined factors (Treat:Time -> Treat_and_Time) and make names R-compatible
   if (!is.null(meta.table[[column]]) && length(meta.table[[column]]) > 0) {
+    # First, handle combined factors
     meta.table[[column]] <- gsub(":", "_and_", meta.table[[column]])
+    # Then sanitize all group names to be syntactically valid R names
+    # This handles spaces, hyphens, and other invalid characters
+    meta.table[[column]] <- make.names(meta.table[[column]], unique = FALSE)
   }
   
   # Calculate depth of hierarchy (dots)
