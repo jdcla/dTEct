@@ -1189,6 +1189,8 @@ meta.samples <- (
     any_of(c("sample_type", "batch_date")),
     # Capture all hierarchy columns correctly
     any_of(unlist(lapply(contrast_grps, function(col) grep(paste0("^", col), colnames(meta.table), value = TRUE)))),
+    # Capture all ID columns for plotting
+    matches("_id$"),
     rep = replicate_num,
     control = test_or_control,
     counts_col,
@@ -1287,8 +1289,11 @@ for (st in seq_types_present) {
 
 # --- GENERATE QC PLOTS ---
 cat("Generating QC Plots...\n", file=log_file, append=TRUE)
-qc_cols <- unique(c(contrast_grps, "treatment_id", "source_id", "disease_id"))
+# Dynamic detection of all ID columns + contrast columns
+qc_cols <- unique(c(contrast_grps, grep("_id$", colnames(dge$samples), value=TRUE)))
 qc_cols <- qc_cols[qc_cols %in% colnames(dge$samples)]
+# Filter to only keep columns with > 1 unique value
+qc_cols <- qc_cols[sapply(qc_cols, function(col) length(unique(dge$samples[[col]])) > 1)]
 
 present_types <- unique(dge$samples$seq_type)
 qc_types <- list()
