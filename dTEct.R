@@ -1294,6 +1294,8 @@ qc_cols <- unique(c(contrast_grps, grep("_id$", colnames(dge$samples), value=TRU
 qc_cols <- qc_cols[qc_cols %in% colnames(dge$samples)]
 # Filter to only keep columns with > 1 unique value
 qc_cols <- qc_cols[sapply(qc_cols, function(col) length(unique(dge$samples[[col]])) > 1)]
+# Explicitly exclude run_id
+qc_cols <- setdiff(qc_cols, "run_id")
 
 present_types <- unique(dge$samples$seq_type)
 qc_types <- list()
