@@ -86,6 +86,23 @@ get_hierarchical_cols <- function(levels) {
   n_super <- length(unique_super)
   
   # 2. Assign distinct Base Colors to Supergroups (Using Set1 or Dark2 for contrast)
+  
+  # --- CASE A: SINGLE SUPERGROUP (Full Spectrum for Subgroups) ---
+  if (n_super == 1) {
+    # If all groups belong to the same supergroup (e.g. brain.ctx, brain.hippo),
+    # we treat them as distinct categorical variables using a full palette.
+    subs <- sort(unique(levels))
+    
+    # Use a high-contrast palette (Set1 or Paired depending on N)
+    pal_name <- if (length(subs) <= 8) "Set1" else "Paired"
+    # Ensure palette is interpolated if n > palette_size
+    final_cols <- colorRampPalette(brewer.pal(min(length(subs), 8), pal_name))(length(subs))
+    names(final_cols) <- subs
+    
+    return(final_cols)
+  }
+  
+  # --- CASE B: MULITPLE SUPERGROUPS (Hierarchical Gradients) ---
   base_palette <- colorRampPalette(brewer.pal(min(n_super, 8), "Set1"))(n_super)
   names(base_palette) <- unique_super
   
@@ -1294,8 +1311,8 @@ qc_cols <- unique(c(contrast_grps, grep("_id$", colnames(dge$samples), value=TRU
 qc_cols <- qc_cols[qc_cols %in% colnames(dge$samples)]
 # Filter to only keep columns with > 1 unique value
 qc_cols <- qc_cols[sapply(qc_cols, function(col) length(unique(dge$samples[[col]])) > 1)]
-# Explicitly exclude run_id
-qc_cols <- setdiff(qc_cols, "run_id")
+# Explicitly exclude run_id and smart_id
+qc_cols <- setdiff(qc_cols, c("run_id", "smart_id"))
 
 present_types <- unique(dge$samples$seq_type)
 qc_types <- list()
