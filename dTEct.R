@@ -86,6 +86,23 @@ get_hierarchical_cols <- function(levels) {
   n_super <- length(unique_super)
   
   # 2. Assign distinct Base Colors to Supergroups (Using Set1 or Dark2 for contrast)
+  
+  # --- CASE A: SINGLE SUPERGROUP (Full Spectrum for Subgroups) ---
+  if (n_super == 1) {
+    # If all groups belong to the same supergroup (e.g. brain.ctx, brain.hippo),
+    # we treat them as distinct categorical variables using a full palette.
+    subs <- sort(unique(levels))
+    
+    # Use a high-contrast palette (Set1 or Paired depending on N)
+    pal_name <- if (length(subs) <= 8) "Set1" else "Paired"
+    # Ensure palette is interpolated if n > palette_size
+    final_cols <- colorRampPalette(brewer.pal(min(length(subs), 8), pal_name))(length(subs))
+    names(final_cols) <- subs
+    
+    return(final_cols)
+  }
+  
+  # --- CASE B: MULITPLE SUPERGROUPS (Hierarchical Gradients) ---
   base_palette <- colorRampPalette(brewer.pal(min(n_super, 8), "Set1"))(n_super)
   names(base_palette) <- unique_super
   
@@ -1061,9 +1078,13 @@ num_col_splits <- list()
 
 # Helper for handling combined columns
 for (column in contrast_grps) {
-  # Handle combined factors (Treat:Time -> Treat_and_Time)
+  # Handle combined factors (Treat:Time -> Treat_and_Time) and make names R-compatible
   if (!is.null(meta.table[[column]]) && length(meta.table[[column]]) > 0) {
+    # First, handle combined factors
     meta.table[[column]] <- gsub(":", "_and_", meta.table[[column]])
+    # Then sanitize all group names to be syntactically valid R names
+    # This handles spaces, hyphens, and other invalid characters
+    meta.table[[column]] <- make.names(meta.table[[column]], unique = FALSE)
   }
   
   # Calculate depth of hierarchy (dots)
@@ -1185,6 +1206,8 @@ meta.samples <- (
     any_of(c("sample_type", "batch_date")),
     # Capture all hierarchy columns correctly
     any_of(unlist(lapply(contrast_grps, function(col) grep(paste0("^", col), colnames(meta.table), value = TRUE)))),
+    # Capture all ID columns for plotting
+    matches("_id$"),
     rep = replicate_num,
     control = test_or_control,
     counts_col,
@@ -1283,12 +1306,19 @@ for (st in seq_types_present) {
 
 # --- GENERATE QC PLOTS ---
 cat("Generating QC Plots...\n", file=log_file, append=TRUE)
-qc_cols <- unique(c(contrast_grps, "treatment_id", "source_id", "disease_id"))
+# Dynamic detection of all ID columns + contrast columns
+qc_cols <- unique(c(contrast_grps, grep("_id$", colnames(dge$samples), value=TRUE)))
 qc_cols <- qc_cols[qc_cols %in% colnames(dge$samples)]
+# Filter to only keep columns with > 1 unique value
+qc_cols <- qc_cols[sapply(qc_cols, function(col) length(unique(dge$samples[[col]])) > 1)]
+# Explicitly exclude run_id and smart_id
+qc_cols <- setdiff(qc_cols, c("run_id", "smart_id"))
 
-qc_types <- list(All = unique(dge$samples$seq_type))
-if ("RNA" %in% dge$samples$seq_type) qc_types$RNA <- "RNA"
-if ("Ribo" %in% dge$samples$seq_type) qc_types$Ribo <- "Ribo"
+present_types <- unique(dge$samples$seq_type)
+qc_types <- list()
+if (length(present_types) > 1) qc_types$All <- present_types
+if ("RNA" %in% present_types) qc_types$RNA <- "RNA"
+if ("Ribo" %in% present_types) qc_types$Ribo <- "Ribo"
 
 for (lbl in names(qc_types)) {
     mask <- dge$samples$seq_type %in% qc_types[[lbl]]
@@ -1361,16 +1391,19 @@ dge <- estimateDisp(dge, design, min.row.sum=30)
 fit_paired <- glmQLFit(dge, design)
 
 # Fit Independent RNA Model
+fit_rna <- NULL
 meta.rna <- meta.design[meta.design$seq_type == "RNA", , drop=FALSE]
-meta.rna <- droplevels(meta.rna)
-f_rna <- "~0 + group"
-if ("batch_date" %in% colnames(meta.rna) && has_var(meta.rna$batch_date)) f_rna <- paste0(f_rna, " + batch_date")
-if ("sample_type" %in% colnames(meta.rna) && has_var(meta.rna$sample_type)) f_rna <- paste0(f_rna, " + sample_type")
-
-dge_rna <- DGEList(counts=counts[, rownames(meta.rna)], samples=data.frame(meta.rna))
-design.rna <- model.matrix(as.formula(f_rna), data=data.frame(meta.rna))
-dge_rna <- estimateDisp(dge_rna, design.rna)
-fit_rna <- glmQLFit(dge_rna, design.rna)
+if (nrow(meta.rna) > 0) {
+    meta.rna <- droplevels(meta.rna)
+    f_rna <- "~0 + group"
+    if ("batch_date" %in% colnames(meta.rna) && has_var(meta.rna$batch_date)) f_rna <- paste0(f_rna, " + batch_date")
+    if ("sample_type" %in% colnames(meta.rna) && has_var(meta.rna$sample_type)) f_rna <- paste0(f_rna, " + sample_type")
+    
+    dge_rna <- DGEList(counts=counts[, rownames(meta.rna)], samples=data.frame(meta.rna))
+    design.rna <- model.matrix(as.formula(f_rna), data=data.frame(meta.rna))
+    dge_rna <- estimateDisp(dge_rna, design.rna)
+    fit_rna <- glmQLFit(dge_rna, design.rna)
+}
 
 # Resume Execution
 dge_idxs <- match(rownames(dge$samples), meta.samples$counts_col)
