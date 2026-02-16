@@ -793,12 +793,13 @@ option_list <- list(
     make_option(c("-u", "--outer_join"    ), type="logical"  , default=FALSE                , metavar="boolean", help="Outer join RNA and Ribo reads, fill NAs with 0 expression."                                                     ),
     make_option(c("-l", "--cores"         ), type="integer"  , default=1                    , metavar="integer", help="Number of cores."                                                                       ),
     make_option(c("-a", "--contrast_cols" ), type="character", default="treatment_id"               , metavar="character", help="Column names from which contrasts are derived; separated by commas."          ),
-    make_option(c("-O", "--one_vs_all"), type="logical", default=TRUE, metavar="boolean", help="If TRUE, also run One-vs-All contrasts for every group detected."),
+    make_option(c("-O", "--skip_one_vs_all"), action="store_true", default=FALSE, help="If set, skips One-vs-All contrasts (Group vs Rest). Default is to RUN them."),
     make_option(c("-p", "--plot_ids"), type="logical", default=FALSE, metavar="boolean", help="Plot Smart IDs instead of replicate numbers in PCA/MDS."),
-    make_option(c("-e", "--no_batch_factor"), type="logical" , default=FALSE, metavar="boolean", help="Don't create factors for batch date. Can be necessary to achieve full rank for some settings"),
+    make_option(c("-e", "--no_batch_factor"), action="store_true", default=FALSE, help="Don't create factors for batch date. Can be necessary to achieve full rank for some settings"),
     make_option(c("-S", "--save_model"), type="character", default=NULL, metavar="path", help="Path to save the fitted model (RData file). Defaults to 'dTEct_model.RData' in outdir if not specified. Ignored if --load_model is used."),
     make_option(c("-L", "--load_model"), type="character", default=NULL, metavar="path", help="Path to load a pre-fitted model from (skips fitting)."),
-    make_option(c("-k", "--skip_pairwise"), action="store_true", default=FALSE, help="If set, skips all pairwise contrasts and only runs One-vs-All (if enabled).")
+    make_option(c("-k", "--skip_pairwise"), action="store_true", default=FALSE, help="If set, skips all pairwise contrasts and only runs One-vs-All (if enabled)."),
+    make_option(c("-T", "--test_run"), action="store_true", default=FALSE, help="Run in test mode: subsets data to first valid contrast and fraction of genes for rapid debugging.")
 )
 
 opt_parser <- OptionParser(option_list=option_list)
@@ -943,10 +944,14 @@ if (!is.null(opt$rna_counts)) {
 if (!is.null(opt$tx_table_path)) {
   # Get TX table to parse gene names
   tx.table <- read.csv(opt$tx_table_path)
-  
-  if (opt$feature_level == "transcript") {
+
+  if (opt$feature_level %in% c("transcript", "translon")) {
      # --- TRANSCRIPT/TRANSLON MODE ---
-     cat("Generating feature2name map for TRANSCRIPT/TRANSLON level analysis...\n", file = log_file, append = TRUE)
+     cat("Generating feature2name map for TRANSCRIPT/TRANSLON level analysis...
+", file = log_file, append = TRUE)
+  
+
+
      
      # 1. Map for Translons (Used for dTE and Ribo)
      # We use the Translon ID as the key, and a composite name for the label
@@ -1011,7 +1016,8 @@ dir.create(paste0(opt$outdir, 'TE'), showWarnings = FALSE, recursive = TRUE)
 if (!is.null(opt$rna_counts) && !is.null(opt$ribo_counts)) {
 
   # --- A. TRANSCRIPT MODE (Expansion Logic) ---
-  if (opt$feature_level == "transcript") {
+  if (opt$feature_level %in% c("transcript", "translon")) {
+
     
     if (is.null(opt$tx_table_path)) {
        stop("Error: 'transcript' mode requires --tx_table_path to map Translons to Transcripts.")
@@ -1328,7 +1334,7 @@ f = "~0 + group"
 
 has_var <- function(vec) { length(unique(as.character(vec))) > 1 }
 
-if (!opt$no_batch_factor && "batch_date" %in% colnames(meta.samples) && has_var(meta.samples$batch_date)) {
+if (!opt$test_run && !opt$no_batch_factor && "batch_date" %in% colnames(meta.samples) && has_var(meta.samples$batch_date)) {
     # CHECK FOR COLLINEARITY
     # If batch_date is perfectly correlated with seq_type or group, it will cause rank deficiency.
     # We check if each batch contains only ONE level of the other factor.
@@ -1342,24 +1348,107 @@ if (!opt$no_batch_factor && "batch_date" %in% colnames(meta.samples) && has_var(
         f = paste0(f, " + batch_date")
         cat("Adding 'batch_date' to design model.\n", file=log_file, append=TRUE)
     }
+} else if (opt$test_run) {
+    cat("TEST RUN MSG: Automatically skipping 'batch_date' to avoid rank deficiency on subset.\n", file=log_file, append=TRUE)
 }
 
-if ("sample_type" %in% colnames(meta.samples) && has_var(meta.samples$sample_type)) {
+if (!opt$test_run && "sample_type" %in% colnames(meta.samples) && has_var(meta.samples$sample_type)) {
     f = paste0(f, " + sample_type")
     cat("Adding 'sample_type' to design model.\n", file=log_file, append=TRUE)
+} else if (opt$test_run) {
+    cat("TEST RUN MSG: Automatically skipping 'sample_type' to avoid rank deficiency on subset.\n", file=log_file, append=TRUE)
 }
+
 
 # Create Design Matrix
 meta.design <- meta.samples %>% column_to_rownames("counts_col")
 design <- model.matrix(as.formula(f), data=data.frame(meta.design))
-
 # -----------------------------------------------------------------------------
 # 5. NORMALIZE & QC
 # -----------------------------------------------------------------------------
 cat("Constructing DGE Object with ALL samples...\n", file=log_file, append=TRUE)
 cat(paste0("Formula: ", f, "\n"), file=log_file, append=TRUE)
 
+# --- TEST RUN SUBSETTING ---
+if (opt$test_run) {
+  cat("\n*** TEST RUN ENABLED ***\n", file = log_file, append = TRUE)
+  cat("Subsetting data for rapid debugging...\n", file = log_file, append = TRUE)
+  
+  # 1. Subset Features (Top 2000)
+  n_total <- nrow(counts)
+  n_keep <- min(2000, n_total)
+  counts <- counts[1:n_keep, , drop=FALSE]
+  cat(sprintf("  - Kept top %d / %d features.\n", n_keep, n_total), file = log_file, append = TRUE)
+  
+  # 2. Subset Samples (First valid contrast only)
+  # Ensure we keep the internal structure consistency (cols_to_process, etc.)
+  # We parse the first requested contrast column
+  target_col <- trimws(unlist(strsplit(opt$contrast_cols, ",")))[1]
+  
+  if (!target_col %in% colnames(meta.table)) {
+      cat(sprintf("  - WARNING: Target contrast col '%s' not found. Using random 10 samples.\n", target_col), file = log_file, append = TRUE)
+      keep_samples <- head(colnames(counts), 10)
+  } else {
+      # Find groups with >= 2 replicates (to allow for variance estimation)
+      grp_counts <- table(meta.table[[target_col]])
+      valid_grps <- names(grp_counts[grp_counts >= 2])
+      
+      if (length(valid_grps) >= 2) {
+          # Keep samples from top 3 groups if available (to test One-vs-All), otherwise 2
+          n_grps <- min(length(valid_grps), 3)
+          grps_to_keep <- valid_grps[1:n_grps]
+          
+          # Collect sample IDs
+          possible_ids <- rownames(meta.table)[meta.table[[target_col]] %in% grps_to_keep]
+          
+          # Intersect with available counts columns
+          available_samples <- intersect(colnames(counts), possible_ids)
+          
+          # Further subset: Keep max 5 samples per group to keep run fast
+          keep_samples <- c()
+          for (g in grps_to_keep) {
+              # Get samples for this group that are in the counts matrix
+              g_samps <- rownames(meta.table)[meta.table[[target_col]] == g]
+              g_samps <- intersect(g_samps, available_samples)
+              
+              # Take top 5
+              if (length(g_samps) > 0) {
+                  keep_samples <- c(keep_samples, head(g_samps, 5))
+              }
+          }
+          
+          if (length(keep_samples) < 4) {
+             cat("  - Not enough samples found after intersection. Falling back to first 20 samples.\n", file = log_file, append = TRUE)
+             keep_samples <- head(colnames(counts), 20)
+          } else {
+             cat(sprintf("  - Restricted to max 5 samples from groups: %s\n", paste(grps_to_keep, collapse=", ")), file = log_file, append = TRUE)
+          }
+          
+      } else {
+           keep_samples <- head(colnames(counts), 20)
+           cat("  - Fewer than 2 valid groups found. Keeping first 20 samples.\n", file = log_file, append = TRUE)
+      }
+  }
+  
+  counts <- counts[, keep_samples, drop=FALSE]
+  cat(sprintf("  - Kept %d samples.\n", ncol(counts)), file = log_file, append = TRUE)
+  
+  # CRITICAL FIX: Subset meta.design to match counts
+  meta.design <- meta.design[colnames(counts), , drop=FALSE]
+  
+  cat("************************\n\n", file = log_file, append = TRUE)
+}
+
+# Pre-filtering (continue normal flow)
 dge <- DGEList(counts=counts, samples=data.frame(meta.design))
+keep <- filterByExpr(dge, design) # Use dge (with group info) or design if available, but design is now mismatched
+# Actually, 'design' matrix (created line 1355) is also mismatched now!
+# We must re-create the design matrix or subset it.
+design <- design[colnames(counts), , drop=FALSE]
+
+# Check if design has empty columns (factors dropped)
+design <- design[, colSums(design != 0) > 0, drop=FALSE]
+
 keep <- filterByExpr(dge, design)
 dge <- dge[keep, , keep.lib.sizes = FALSE]
 dge <- calcNormFactors(dge, method="TMM")
@@ -1486,8 +1575,8 @@ meta.rna <- meta.design[meta.design$seq_type == "RNA", , drop=FALSE]
 if (nrow(meta.rna) > 0) {
     meta.rna <- droplevels(meta.rna)
     f_rna <- "~0 + group"
-    if ("batch_date" %in% colnames(meta.rna) && has_var(meta.rna$batch_date)) f_rna <- paste0(f_rna, " + batch_date")
-    if ("sample_type" %in% colnames(meta.rna) && has_var(meta.rna$sample_type)) f_rna <- paste0(f_rna, " + sample_type")
+    if (!opt$test_run && "batch_date" %in% colnames(meta.rna) && has_var(meta.rna$batch_date)) f_rna <- paste0(f_rna, " + batch_date")
+    if (!opt$test_run && "sample_type" %in% colnames(meta.rna) && has_var(meta.rna$sample_type)) f_rna <- paste0(f_rna, " + sample_type")
     
     dge_rna <- DGEList(counts=counts[, rownames(meta.rna)], samples=data.frame(meta.rna))
     design.rna <- model.matrix(as.formula(f_rna), data=data.frame(meta.rna))
@@ -1539,7 +1628,7 @@ if (!opt$skip_pairwise) {
 # -----------------------------------------------------------------------------
 # 7. EXECUTE ONE-VS-ALL (Optional)
 # -----------------------------------------------------------------------------
-if (opt$one_vs_all) {
+if (!opt$skip_one_vs_all) {
     cat("\nExecuting One-vs-All Contrasts...\n", file=log_file, append=TRUE)
     
     # We iterate over every valid unique group found

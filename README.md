@@ -148,12 +148,13 @@ This section details the command-line options and the logic behind the automated
 | `-d`, `--id_col`       | integer       | `1`                | Column in the count files containing feature identifiers.                                                                                 |
 | `-s`, `--sep`          | character     | `,`                | Separator used in input tables.                                                                                                           |
 | `-o`, `--outdir`       | path          | `out`              | Output directory for results.                                                                                                             |
-| `-l`, `--cores`        | integer       | `1`                | Number of cores for parallel processing.                                                                                                  |
+| `-O`, `--skip_one_vs_all`| flag | `FALSE` | If set, skips One-vs-All contrasts (Group vs Rest). Default is to RUN them. |
 | `-p`, `--plot_ids`     | boolean       | `FALSE`            | If `TRUE`, labels PCA/MDS plots with Sample IDs. If `FALSE`, uses replicate numbers.                                                      |
-| `-e`, `--no_batch_factor` | boolean | `FALSE` | If `TRUE`, prevents the script from automatically adding `batch_date` to the design model. |
+| `-e`, `--no_batch_factor`| flag          | `FALSE`            | Don't create factors for batch date. Can be necessary to achieve full rank for some settings.                             |
 | `-S`, `--save_model`   | path          | `NULL`             | Path to save the fitted model (RData file). Defaults to `dTEct_model.RData` in output dir if not specified. Ignored if `--load_model` is used. |
 | `-L`, `--load_model`   | path          | `NULL`             | Path to load a pre-fitted model from. Skips data processing and model fitting.                                                            |
 | `-k`, `--skip_pairwise`| flag          | `FALSE`            | If set, skips the exhaustive pairwise contrasts and only runs One-vs-All (if enabled).                                                    |
+| `-T`, `--test_run`     | flag          | `FALSE`            | Run in test mode: subsets data to first valid contrast and fraction of genes for rapid debugging. |
 
 ### Designing Contrasts (`--contrast_cols`)
 
