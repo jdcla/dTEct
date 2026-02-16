@@ -9,7 +9,11 @@ suppressPackageStartupMessages({
   library(RColorBrewer)
   library(DEFormats)
   library(BiocParallel)
-  library(svglite)
+  library(DEFormats)
+  library(BiocParallel)
+  if (requireNamespace("svglite", quietly = TRUE)) {
+    library(svglite)
+  }
 })
 options(show.error.locations = TRUE)
 
@@ -333,15 +337,15 @@ evaluate_combination_contrast <- function(meta, tup, contrast_col, fit_paired, f
     n_ribo[[i]] <- sum(ribo_grp_mask)
     
     if (sum(rna_grp_mask) != 0) {
-      rna_vals <- unique(meta[rna_grp_mask, contrast_col])
+      rna_vals <- unique(meta[rna_grp_mask, contrast_col, drop=FALSE])
       weight_dict_rna <- as.list(table(meta[rna_grp_mask, contrast_col])/sum(rna_grp_mask))
-      grp_rna[[i]] <- construct_contrast_string(rna_vals[[contrast_col]], "RNA", meta, weight_dict_rna)
+      grp_rna[[i]] <- construct_contrast_string(rna_vals[,1], "RNA", meta, weight_dict_rna)
       order[[i]] <- sum(meta[rna_grp_mask, "control"] == "test")
     }
     if (sum(ribo_grp_mask) != 0) {
-      ribo_vals <- unique(meta[ribo_grp_mask, contrast_col])
+      ribo_vals <- unique(meta[ribo_grp_mask, contrast_col, drop=FALSE])
       weight_dict_ribo <- as.list(table(meta[ribo_grp_mask, contrast_col])/sum(ribo_grp_mask))
-      grp_ribo[[i]] <- construct_contrast_string(ribo_vals[[contrast_col]], "Ribo", meta, weight_dict_ribo)
+      grp_ribo[[i]] <- construct_contrast_string(ribo_vals[,1], "Ribo", meta, weight_dict_ribo)
       order[[i]] <- sum(meta[ribo_grp_mask, "control"] == "test")
     }
   }
@@ -502,13 +506,13 @@ evaluate_unique_contrast <- function(meta, uniq_val, contrast_col, fit, outdir, 
   n_ribo <- sum(ribo_grp_mask)
   
   if (sum(ribo_grp_mask) != 0 && sum(rna_grp_mask) != 0) {
-    ribo_vals <- unique(meta[ribo_grp_mask, contrast_col])
+    ribo_vals <- unique(meta[ribo_grp_mask, contrast_col, drop=FALSE])
     weight_dict_ribo <- as.list(table(meta[ribo_grp_mask, contrast_col])/sum(ribo_grp_mask))
-    rna_vals <- unique(meta[rna_grp_mask, contrast_col])
+    rna_vals <- unique(meta[rna_grp_mask, contrast_col, drop=FALSE])
     weight_dict_rna <- as.list(table(meta[rna_grp_mask, contrast_col])/sum(rna_grp_mask))
     
-    uniq_ribo <- construct_contrast_string(ribo_vals[[contrast_col]], "Ribo", meta, weight_dict_ribo)
-    uniq_rna <- construct_contrast_string(rna_vals[[contrast_col]], "RNA", meta, weight_dict_rna)
+    uniq_ribo <- construct_contrast_string(ribo_vals[,1], "Ribo", meta, weight_dict_ribo)
+    uniq_rna <- construct_contrast_string(rna_vals[,1], "RNA", meta, weight_dict_rna)
     
     uniq_contrast <- paste0("makeContrasts(", uniq_ribo, " - ", uniq_rna, ", levels=design)")
     
@@ -791,12 +795,23 @@ option_list <- list(
     make_option(c("-a", "--contrast_cols" ), type="character", default="treatment_id"               , metavar="character", help="Column names from which contrasts are derived; separated by commas."          ),
     make_option(c("-O", "--one_vs_all"), type="logical", default=TRUE, metavar="boolean", help="If TRUE, also run One-vs-All contrasts for every group detected."),
     make_option(c("-p", "--plot_ids"), type="logical", default=FALSE, metavar="boolean", help="Plot Smart IDs instead of replicate numbers in PCA/MDS."),
-    make_option(c("-e", "--no_batch_factor"), type="logical" , default=FALSE, metavar="boolean", help="Don't create factors for batch date. Can be necessary to achieve full rank for some settings")
+    make_option(c("-e", "--no_batch_factor"), type="logical" , default=FALSE, metavar="boolean", help="Don't create factors for batch date. Can be necessary to achieve full rank for some settings"),
+    make_option(c("-S", "--save_model"), type="character", default=NULL, metavar="path", help="Path to save the fitted model (RData file). Defaults to 'dTEct_model.RData' in outdir if not specified. Ignored if --load_model is used."),
+    make_option(c("-L", "--load_model"), type="character", default=NULL, metavar="path", help="Path to load a pre-fitted model from (skips fitting)."),
+    make_option(c("-k", "--skip_pairwise"), action="store_true", default=FALSE, help="If set, skips all pairwise contrasts and only runs One-vs-All (if enabled).")
 )
 
 opt_parser <- OptionParser(option_list=option_list)
 opt        <- parse_args(opt_parser)
-validate_inputs(opt)
+
+# Validate Inputs (Skip some checks if loading model)
+if (is.null(opt$load_model)) {
+  validate_inputs(opt)
+} else {
+  if (!file.exists(opt$load_model)) {
+    stop(paste("Model file not found:", opt$load_model))
+  }
+}
 
 
 ## DEBUG
@@ -836,11 +851,39 @@ if (!grepl("/", opt$outdir)) {
 dir.create(opt$outdir, showWarnings = FALSE, recursive = TRUE)
 # Define the path to the log file
 log_file <- paste0(opt$outdir, "run_info.txt")
-# Clear existing content of the log file at the start of the script
-# So the log file is fresh for each run
-file.create(log_file) 
 
-meta.table <- read_csv(
+# --- LOAD MODEL LOGIC ---
+if (!is.null(opt$load_model)) {
+  cat(paste0("Loading model from ", opt$load_model, "...\n"))
+  load(opt$load_model)
+  # Update internal opt with new run parameters if needed (e.g. outdir change)
+  # We generally want to keep the fitted objects but maybe change output location
+  # For now, we assume the user provides consistent args or we rely on the loaded environment
+  # EXCEPT for outdir and cores which might change
+  
+  # Ensure save_model is ignored when loading
+  opt$save_model <- NULL
+  
+  # Re-register cores
+  register(MulticoreParam(opt$cores))
+  
+  # Re-open log file since we just overwrote it or it might be closed
+  log_file <- paste0(opt$outdir, "run_info.txt")
+  cat("Model loaded. Skipping data processing and fitting.\n", file = log_file, append = TRUE)
+  
+} else {
+  # --- NORMAL EXECUTION START ---
+  
+  # Set default save path if not provided
+  if (is.null(opt$save_model)) {
+      opt$save_model <- file.path(opt$outdir, "dTEct_model.RData")
+      cat(paste0("No --save_model provided. Defaulting to: ", opt$save_model, "\n"))
+  }
+  
+  # Clear existing content of the log file at the start of the script
+  file.create(log_file) 
+  
+  meta.table <- read_csv(
   opt$metadata,
   comment = "#",
   col_types = cols(
@@ -1076,53 +1119,75 @@ comb_dict <- list()
 uniq_dict <- list()
 num_col_splits <- list()
 
-# Helper for handling combined columns
-for (column in contrast_grps) {
-  # Handle combined factors (Treat:Time -> Treat_and_Time) and make names R-compatible
+# Define columns to process: Input columns + Combined column (if multiple)
+cols_to_process <- contrast_grps
+
+# Combine contrast group columns if needed
+if (length(contrast_grps) > 1) {
+  # Legacy logic: Create combined column with ':' then replace with '_and_'
+  meta.table[[contrast_col]] <- do.call(paste, c(meta.table[contrast_grps], sep=":"))
+  cols_to_process <- unique(c(cols_to_process, contrast_col))
+} 
+
+# Split columns into subclasses and generate dictionary
+for (column in cols_to_process) {
+  
   if (!is.null(meta.table[[column]]) && length(meta.table[[column]]) > 0) {
-    # First, handle combined factors
+    # Normalize separators
     meta.table[[column]] <- gsub(":", "_and_", meta.table[[column]])
-    # Then sanitize all group names to be syntactically valid R names
-    # This handles spaces, hyphens, and other invalid characters
+    # Sanitize names (ensure valid R names)
     meta.table[[column]] <- make.names(meta.table[[column]], unique = FALSE)
+  } else {
+    warning(sprintf("Column '%s' is missing or empty. Skipping.", column))
+    next
   }
   
-  # Calculate depth of hierarchy (dots)
+  # Calculate depth of hierarchy
   max_splits <- max(str_count(meta.table[[column]], "\\.") + 1)
   num_col_splits[[column]] <- max_splits
   column_names <- paste0(column, ".", seq_len(max_splits))
   
-  # Create the split columns in meta.table immediately
+  # Create split columns
   for (i in seq_len(max_splits)) {
     meta.table[[column_names[i]]] <- sapply(strsplit(meta.table[[column]], "\\."), function(x) {
       paste(x[1:i], collapse = ".")
     })
   }
-  # normalize main column
+  
+  # Normalize main column (pad with .NA)
   meta.table[[column]] <- sapply(strsplit(meta.table[[column]], "\\."), function(x) {
     paste(c(x, rep("NA", max_splits - length(x))), collapse = ".")
   })
   
-  # Log what we found
+  # Log
   cat(paste0("  Column '", column, "': Max Depth = ", max_splits, "\n"), file=log_file, append=TRUE)
-  cat(paste0("  Unique Groups found: ", paste(unique(meta.table[[column]]), collapse=", "), "\n"), file=log_file, append=TRUE)
 
-  # Build Contrast Combinations
+  # Build Combinations
   combs <- list()
   for (i in seq_len(max_splits)) {
     vals <- unique(meta.table[[column_names[i]]])
     vals <- vals[!grepl("\\.NA", vals)]
+    
     if (length(vals) > 1) {
       groups <- combn(vals, 2, simplify)
+      
+      # Handle Orthogonal Combinations using _and_ logic
       if (any(grep("_and_", meta.table[[column]]))) {
         orth_vals_1 <- unique(sapply(strsplit(meta.table[[column]], "_and_"), `[`, 1))
         orth_vals_2 <- unique(sapply(strsplit(meta.table[[column]], "_and_"), `[`, 2))
-        orth_groups_1 <- combn(orth_vals_1, 2, simplify)
-        orth_groups_2 <- combn(orth_vals_2, 2, simplify)
-        groups <- cbind(groups, orth_groups_1, orth_groups_2)
+        
+        # Guard against single-value derived columns causing errors in combn
+        orth_groups_1 <- if(length(orth_vals_1) > 1) combn(orth_vals_1, 2, simplify) else NULL
+        orth_groups_2 <- if(length(orth_vals_2) > 1) combn(orth_vals_2, 2, simplify) else NULL
+        
+        if (!is.null(orth_groups_1)) groups <- cbind(groups, orth_groups_1)
+        if (!is.null(orth_groups_2)) groups <- cbind(groups, orth_groups_2)
       }
+      
+      # Filter for Valid Comparisons (Shared Parent)
       for (j in 1:length(groups[1,])) {
         if (i > 1) {
+          # Check if parents (up to i-1) are the same
           if (substr_to_nth_dot(groups[,j][1], i-1) == substr_to_nth_dot(groups[,j][2], i-1)) {
             combs <- append(combs, list(groups[,j]))
           }
@@ -1132,14 +1197,14 @@ for (column in contrast_grps) {
       }
     }
   }
-  comb_dict[[column]] <- combs
+  comb_dict[[column]] <- unique(combs) # Ensure uniqueness
   uniq_dict[[column]] <- unique(unlist(combs))
 }
 
 # -----------------------------------------------------------------------------
 # 3. INTELLIGENT GROUPING (Renaming sparse subgroups)
 # -----------------------------------------------------------------------------
-for (contrast in contrast_grps) {
+for (contrast in cols_to_process) {
   # Count depth of hierarchy
   dot_counts <- sapply(meta.table[[contrast]], function(x) {
     count <- gregexpr("\\.", x)[[1]]
@@ -1205,7 +1270,8 @@ meta.samples <- (
     smart_id,
     any_of(c("sample_type", "batch_date")),
     # Capture all hierarchy columns correctly
-    any_of(unlist(lapply(contrast_grps, function(col) grep(paste0("^", col), colnames(meta.table), value = TRUE)))),
+    # Capture all hierarchy columns correctly
+    any_of(unlist(lapply(cols_to_process, function(col) grep(paste0("^", col), colnames(meta.table), value = TRUE)))),
     # Capture all ID columns for plotting
     matches("_id$"),
     rep = replicate_num,
@@ -1263,8 +1329,19 @@ f = "~0 + group"
 has_var <- function(vec) { length(unique(as.character(vec))) > 1 }
 
 if (!opt$no_batch_factor && "batch_date" %in% colnames(meta.samples) && has_var(meta.samples$batch_date)) {
-    f = paste0(f, " + batch_date")
-    cat("Adding 'batch_date' to design model.\n", file=log_file, append=TRUE)
+    # CHECK FOR COLLINEARITY
+    # If batch_date is perfectly correlated with seq_type or group, it will cause rank deficiency.
+    # We check if each batch contains only ONE level of the other factor.
+    
+    is_nested_in_type <- all(rowSums(table(meta.samples$batch_date, meta.samples$seq_type) > 0) == 1)
+    is_nested_in_group <- all(rowSums(table(meta.samples$batch_date, meta.samples$group) > 0) == 1)
+    
+    if (is_nested_in_type || is_nested_in_group) {
+        cat("WARNING: 'batch_date' is perfectly collinear with experimental factors. Dropping from design to avoid rank deficiency.\n", file=log_file, append=TRUE)
+    } else {
+        f = paste0(f, " + batch_date")
+        cat("Adding 'batch_date' to design model.\n", file=log_file, append=TRUE)
+    }
 }
 
 if ("sample_type" %in% colnames(meta.samples) && has_var(meta.samples$sample_type)) {
@@ -1341,9 +1418,22 @@ has_reps <- function(grp_name, meta, col_name, min_n=2) {
     target_col <- paste0(col_name, ".", num_dots)
     
     if (target_col %in% colnames(meta)) {
-        sub_meta <- meta[meta[[target_col]] == grp_name, ]
+        # Check if exact match exists
+        is_exact <- grp_name %in% meta[[target_col]]
+        # Check if column is a combined factor
+        is_compound <- any(grepl("_and_", meta[[target_col]]))
         
-        # FIX: Check counts PER SEQ TYPE. 
+        if (!is_exact && is_compound && !grepl("_and_", grp_name)) {
+             # Orthogonal contrast case: Filter by component
+             split_entries <- strsplit(as.character(meta[[target_col]]), "_and_")
+             mask <- sapply(split_entries, function(parts) grp_name %in% parts)
+             sub_meta <- meta[mask, ]
+        } else {
+             # Standard case: Exact match
+             sub_meta <- meta[meta[[target_col]] == grp_name, ]
+        }
+
+        # Check counts PER SEQ TYPE. 
         # Both RNA and Ribo must have >= 2 for the model to work properly for dTE
         counts_by_type <- table(sub_meta$seq_type)
         if (length(counts_by_type) > 0 && all(counts_by_type >= min_n)) {
@@ -1402,8 +1492,25 @@ if (nrow(meta.rna) > 0) {
     dge_rna <- DGEList(counts=counts[, rownames(meta.rna)], samples=data.frame(meta.rna))
     design.rna <- model.matrix(as.formula(f_rna), data=data.frame(meta.rna))
     dge_rna <- estimateDisp(dge_rna, design.rna)
+    dge_rna <- estimateDisp(dge_rna, design.rna)
     fit_rna <- glmQLFit(dge_rna, design.rna)
 }
+
+# --- SAVE MODEL LOGIC ---
+if (!is.null(opt$save_model)) {
+    cat(paste0("Saving model to ", opt$save_model, "...\n"), file=log_file, append=TRUE)
+    # List of objects to save to ensure the environment is reproducible
+    # We save everything relevant for the contrast execution phase
+    save(
+        list = c("fit_paired", "fit_rna", "dge", "meta.samples", "design", "design.rna",
+                 "contrast_col", "uniq_dict", "comb_dict", "qc_types", "opt", "log_file", 
+                 "tx.table", "feature2name", "contrast_grps", "seq_types"), 
+        file = opt$save_model
+    )
+    cat("Model saved successfully.\n", file=log_file, append=TRUE)
+}
+
+} # End of if (!is.null(opt$load_model)) else block
 
 # Resume Execution
 dge_idxs <- match(rownames(dge$samples), meta.samples$counts_col)
@@ -1416,13 +1523,18 @@ cat("Executing contrasts...\n", file=log_file, append=TRUE)
 
 # Execute Unique Contrasts (TE mostly, uses Paired Fit)
 bplapply(uniq_dict[[contrast_col]], function(val) {
-    evaluate_unique_contrast(dge.meta, val, contrast_col, fit_paired, opt$outdir, log_file)
+    evaluate_unique_contrast(dge$samples, val, contrast_col, fit_paired, opt$outdir, log_file)
 })
 
 # Execute Combination Contrasts (DE & dTE, uses Paired + RNA Independent Fit)
-bplapply(comb_dict[[contrast_col]], function(val) {
-    evaluate_combination_contrast(dge.meta, val, contrast_col, fit_paired, fit_rna, opt$outdir, log_file)
-})
+# Execute Combination Contrasts (DE & dTE, uses Paired + RNA Independent Fit)
+if (!opt$skip_pairwise) {
+    bplapply(comb_dict[[contrast_col]], function(val) {
+        evaluate_combination_contrast(dge$samples, val, contrast_col, fit_paired, fit_rna, opt$outdir, log_file)
+    })
+} else {
+    cat("Skipping pairwise contrasts (--skip_pairwise is TRUE).\n", file=log_file, append=TRUE)
+}
 
 # -----------------------------------------------------------------------------
 # 7. EXECUTE ONE-VS-ALL (Optional)
