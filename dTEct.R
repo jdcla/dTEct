@@ -696,7 +696,7 @@ eval_contrast <- function(fit, contrast, out_prefix, title, log_file) {
         select(gene_id, gene_name, row_id, logFC, logCPM, any_of("F"), PValue, FDR) |> 
         arrange(PValue)
 
-    write.csv(out_table, paste0(out_prefix, ".csv"), quote=FALSE, row.names=FALSE)
+    write.csv(out_table, paste0(out_prefix, ".csv"), row.names=FALSE)
     
     # 5. Plotting
     ymax_vals <- -log10(res$PValue)[-log10(res$PValue) != Inf]
@@ -1465,7 +1465,7 @@ for (st in seq_types_present) {
         formatted_data <- tibble::rownames_to_column(data.frame(format(logcpm_counts, digits=3, nsmall = 3)), "Name")
         
         out_file <- paste0(opt$outdir, st, "_cpm_log_matrix.csv")
-        write.table(formatted_data, file=out_file, sep=",", row.names = FALSE, quote=FALSE)
+        write.table(formatted_data, file=out_file, sep=",", row.names = FALSE)
         cat(paste0("  Saved: ", out_file, "\n"), file=log_file, append=TRUE)
     }
 }
