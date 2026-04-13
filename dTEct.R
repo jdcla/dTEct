@@ -1503,64 +1503,67 @@ for (lbl in names(qc_types)) {
     }
 }
 
-# --- Combined "All" plot using a block-concatenated feature matrix ---
-# Instead of projecting RNA + Ribo from the same (paired) feature space,
-# we stack RNA-specific features and Ribo-specific features as separate rows.
-# Each sample only has non-zero values in its own modality block.
-# This lets MDS/PCA separate samples by their actual expression programs.
+# --- Combined "All" plot: one point per biological sample ---
+# Match RNA and Ribo by smart_id, concatenate their feature vectors so each
+# biological sample is a single point with features = [RNA_features; Ribo_features].
 if (length(present_types) > 1 && "RNA" %in% present_types && "Ribo" %in% present_types) {
-    cat("Building block-concatenated matrix for joint All QC plots...\n", file=log_file, append=TRUE)
+    cat("Building concatenated-modality matrix for joint All QC plots...\n", file=log_file, append=TRUE)
     
-    # Use rna_counts_original (transcript IDs) if available (translon mode),
-    # else fall back to the RNA columns in the paired counts matrix
-    rna_mat_qc <- if (exists("rna_counts_original")) {
-        rna_counts_original
-    } else {
-        rna_cols <- colnames(dge$counts)[dge$samples$seq_type == "RNA"]
-        dge$counts[, rna_cols, drop=FALSE]
-    }
-    ribo_mat_qc <- ribo_counts_select
+    # Split metadata by seq_type
+    meta_rna  <- dge$samples[dge$samples$seq_type == "RNA", , drop=FALSE]
+    meta_ribo <- dge$samples[dge$samples$seq_type == "Ribo", , drop=FALSE]
     
-    rna_sample_ids  <- colnames(rna_mat_qc)  # e.g. "SampleA_RNA"
-    ribo_sample_ids <- colnames(ribo_mat_qc) # e.g. "SampleA_Ribo"
-    all_sample_ids  <- c(rna_sample_ids, ribo_sample_ids)
+    # Find biological samples present in BOTH modalities
+    shared_ids <- intersect(as.character(meta_rna$smart_id),
+                            as.character(meta_ribo$smart_id))
     
-    # Build block matrix: nrow = rna_feats + ribo_feats, ncol = all unique samples
-    n_rna_feat  <- nrow(rna_mat_qc)
-    n_ribo_feat <- nrow(ribo_mat_qc)
-    n_samples   <- length(all_sample_ids)
-    
-    block_mat <- matrix(0L, nrow = n_rna_feat + n_ribo_feat, ncol = n_samples,
-                        dimnames = list(
-                            c(paste0("RNA:", rownames(rna_mat_qc)),
-                              paste0("Ribo:", rownames(ribo_mat_qc))),
-                            all_sample_ids
-                        ))
-    # Fill RNA block (top rows, RNA columns)
-    block_mat[seq_len(n_rna_feat), match(rna_sample_ids, all_sample_ids)] <- as.integer(as.matrix(rna_mat_qc))
-    # Fill Ribo block (bottom rows, Ribo columns)
-    block_mat[(n_rna_feat + 1):(n_rna_feat + n_ribo_feat), match(ribo_sample_ids, all_sample_ids)] <- as.integer(as.matrix(ribo_mat_qc))
-
-    # Build matching metadata for all samples
-    meta_rna_qc  <- dge$samples[dge$samples$seq_type == "RNA", , drop=FALSE]
-    meta_ribo_qc <- dge$samples[dge$samples$seq_type == "Ribo", , drop=FALSE]
-    meta_all_qc  <- rbind(meta_rna_qc, meta_ribo_qc)
-    
-    # Normalize with edgeR (lib sizes = column sums; zeros in block don't affect other modality)
-    dge_all <- DGEList(counts=block_mat, samples=data.frame(meta_all_qc))
-    dge_all <- calcNormFactors(dge_all, method="TMM")
-    
-    n_all <- ncol(dge_all)
-    if (n_all >= 3) {
-        eval_MDS(dge_all, meta_all_qc, qc_cols, opt$outdir, "All", opt$plot_ids)
-        eval_PCA(dge_all, meta_all_qc, qc_cols, opt$outdir, "All", opt$plot_ids)
+    if (length(shared_ids) >= 3) {
+        cat(sprintf("  Found %d biological samples with both RNA and Ribo data.\n", length(shared_ids)),
+            file=log_file, append=TRUE)
+        
+        # For each shared smart_id, get the corresponding counts_col (row in dge$samples)
+        rna_col_lookup  <- setNames(rownames(meta_rna),  as.character(meta_rna$smart_id))
+        ribo_col_lookup <- setNames(rownames(meta_ribo), as.character(meta_ribo$smart_id))
+        
+        rna_cols_matched  <- rna_col_lookup[shared_ids]
+        ribo_cols_matched <- ribo_col_lookup[shared_ids]
+        
+        # Get the count sub-matrices
+        rna_sub  <- as.matrix(dge$counts[, rna_cols_matched, drop=FALSE])
+        ribo_sub <- as.matrix(dge$counts[, ribo_cols_matched, drop=FALSE])
+        
+        # Rename columns to the biological sample ID (smart_id)
+        colnames(rna_sub)  <- shared_ids
+        colnames(ribo_sub) <- shared_ids
+        
+        # Prefix row names to distinguish modalities
+        rownames(rna_sub)  <- paste0("RNA:",  rownames(rna_sub))
+        rownames(ribo_sub) <- paste0("Ribo:", rownames(ribo_sub))
+        
+        # Stack vertically: rows = [RNA features; Ribo features], cols = biological samples
+        concat_mat <- rbind(rna_sub, ribo_sub)
+        
+        # Build metadata for the biological samples (use RNA metadata as base)
+        meta_all <- meta_rna[rna_cols_matched, , drop=FALSE]
+        rownames(meta_all) <- shared_ids
+        # Override seq_type to "Both" since these are combined
+        meta_all$seq_type <- factor("Both")
+        
+        # Build DGE and normalize
+        dge_all <- DGEList(counts=concat_mat, samples=data.frame(meta_all))
+        dge_all <- calcNormFactors(dge_all, method="TMM")
+        
+        eval_MDS(dge_all, meta_all, qc_cols, opt$outdir, "All", opt$plot_ids)
+        eval_PCA(dge_all, meta_all, qc_cols, opt$outdir, "All", opt$plot_ids)
         log_cpm_all <- cpm(dge_all, log=TRUE, normalized.lib.sizes=TRUE)
-        eval_heatmap(log_cpm_all, meta_all_qc, qc_cols, opt$outdir, "All")
-        # NOTE: GeneClusters_All is intentionally skipped — the zero-filled block
-        # structure would dominate variance and produce a misleading heatmap.
+        eval_heatmap(log_cpm_all, meta_all, qc_cols, opt$outdir, "All")
+        # GeneClusters_All skipped — concatenated feature space not meaningful for top-variance gene heatmap
         cat("Joint All QC plots complete.\n", file=log_file, append=TRUE)
+    } else {
+        cat("  Fewer than 3 shared biological samples — skipping All plots.\n", file=log_file, append=TRUE)
     }
 }
+
 
 # -----------------------------------------------------------------------------
 # 6. FILTER CONTRASTS & FIT MODELS
