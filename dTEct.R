@@ -1537,9 +1537,9 @@ if (length(present_types) > 1 && "RNA" %in% present_types && "Ribo" %in% present
                             all_sample_ids
                         ))
     # Fill RNA block (top rows, RNA columns)
-    block_mat[seq_len(n_rna_feat), match(rna_sample_ids, all_sample_ids)] <- as.integer(rna_mat_qc)
+    block_mat[seq_len(n_rna_feat), match(rna_sample_ids, all_sample_ids)] <- as.integer(as.matrix(rna_mat_qc))
     # Fill Ribo block (bottom rows, Ribo columns)
-    block_mat[(n_rna_feat + 1):(n_rna_feat + n_ribo_feat), match(ribo_sample_ids, all_sample_ids)] <- as.integer(ribo_mat_qc)
+    block_mat[(n_rna_feat + 1):(n_rna_feat + n_ribo_feat), match(ribo_sample_ids, all_sample_ids)] <- as.integer(as.matrix(ribo_mat_qc))
 
     # Build matching metadata for all samples
     meta_rna_qc  <- dge$samples[dge$samples$seq_type == "RNA", , drop=FALSE]
