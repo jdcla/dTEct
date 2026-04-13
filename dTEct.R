@@ -1052,6 +1052,10 @@ if (!is.null(opt$rna_counts) && !is.null(opt$ribo_counts)) {
     parent_ids_for_translons <- translon_rna_map[rownames(ribo_counts_select), "transcript_id"]
     rna_counts_expanded <- rna_counts[parent_ids_for_translons, , drop=FALSE]
     
+    # Save with original transcript rownames for the independent RNA-only model
+    # (transcript IDs must be preserved so RNA contrast output uses ST_.../ENST... IDs)
+    rna_counts_original <- rna_counts_expanded
+
     # 6. Align Rownames (Critical for edgeR pairing)
     # The RNA matrix must now have Translon IDs as rownames to match the Ribo matrix
     rownames(rna_counts_expanded) <- rownames(ribo_counts_select)
@@ -1482,10 +1486,10 @@ qc_cols <- setdiff(qc_cols, c("run_id", "smart_id"))
 
 present_types <- unique(dge$samples$seq_type)
 qc_types <- list()
-if (length(present_types) > 1) qc_types$All <- present_types
 if ("RNA" %in% present_types) qc_types$RNA <- "RNA"
 if ("Ribo" %in% present_types) qc_types$Ribo <- "Ribo"
 
+# --- Per-modality RNA and Ribo plots (unchanged) ---
 for (lbl in names(qc_types)) {
     mask <- dge$samples$seq_type %in% qc_types[[lbl]]
     if (sum(mask) >= 3) { 
@@ -1496,6 +1500,65 @@ for (lbl in names(qc_types)) {
         log_cpm <- cpm(sub_dge, log=TRUE, normalized.lib.sizes=TRUE)
         eval_heatmap(log_cpm, sub_meta, qc_cols, opt$outdir, lbl)
         eval_gene_clusters(log_cpm, sub_meta, qc_cols, opt$outdir, lbl)
+    }
+}
+
+# --- Combined "All" plot using a block-concatenated feature matrix ---
+# Instead of projecting RNA + Ribo from the same (paired) feature space,
+# we stack RNA-specific features and Ribo-specific features as separate rows.
+# Each sample only has non-zero values in its own modality block.
+# This lets MDS/PCA separate samples by their actual expression programs.
+if (length(present_types) > 1 && "RNA" %in% present_types && "Ribo" %in% present_types) {
+    cat("Building block-concatenated matrix for joint All QC plots...\n", file=log_file, append=TRUE)
+    
+    # Use rna_counts_original (transcript IDs) if available (translon mode),
+    # else fall back to the RNA columns in the paired counts matrix
+    rna_mat_qc <- if (exists("rna_counts_original")) {
+        rna_counts_original
+    } else {
+        rna_cols <- colnames(dge$counts)[dge$samples$seq_type == "RNA"]
+        dge$counts[, rna_cols, drop=FALSE]
+    }
+    ribo_mat_qc <- ribo_counts_select
+    
+    rna_sample_ids  <- colnames(rna_mat_qc)  # e.g. "SampleA_RNA"
+    ribo_sample_ids <- colnames(ribo_mat_qc) # e.g. "SampleA_Ribo"
+    all_sample_ids  <- c(rna_sample_ids, ribo_sample_ids)
+    
+    # Build block matrix: nrow = rna_feats + ribo_feats, ncol = all unique samples
+    n_rna_feat  <- nrow(rna_mat_qc)
+    n_ribo_feat <- nrow(ribo_mat_qc)
+    n_samples   <- length(all_sample_ids)
+    
+    block_mat <- matrix(0L, nrow = n_rna_feat + n_ribo_feat, ncol = n_samples,
+                        dimnames = list(
+                            c(paste0("RNA:", rownames(rna_mat_qc)),
+                              paste0("Ribo:", rownames(ribo_mat_qc))),
+                            all_sample_ids
+                        ))
+    # Fill RNA block (top rows, RNA columns)
+    block_mat[seq_len(n_rna_feat), match(rna_sample_ids, all_sample_ids)] <- as.integer(rna_mat_qc)
+    # Fill Ribo block (bottom rows, Ribo columns)
+    block_mat[(n_rna_feat + 1):(n_rna_feat + n_ribo_feat), match(ribo_sample_ids, all_sample_ids)] <- as.integer(ribo_mat_qc)
+
+    # Build matching metadata for all samples
+    meta_rna_qc  <- dge$samples[dge$samples$seq_type == "RNA", , drop=FALSE]
+    meta_ribo_qc <- dge$samples[dge$samples$seq_type == "Ribo", , drop=FALSE]
+    meta_all_qc  <- rbind(meta_rna_qc, meta_ribo_qc)
+    
+    # Normalize with edgeR (lib sizes = column sums; zeros in block don't affect other modality)
+    dge_all <- DGEList(counts=block_mat, samples=data.frame(meta_all_qc))
+    dge_all <- calcNormFactors(dge_all, method="TMM")
+    
+    n_all <- ncol(dge_all)
+    if (n_all >= 3) {
+        eval_MDS(dge_all, meta_all_qc, qc_cols, opt$outdir, "All", opt$plot_ids)
+        eval_PCA(dge_all, meta_all_qc, qc_cols, opt$outdir, "All", opt$plot_ids)
+        log_cpm_all <- cpm(dge_all, log=TRUE, normalized.lib.sizes=TRUE)
+        eval_heatmap(log_cpm_all, meta_all_qc, qc_cols, opt$outdir, "All")
+        # NOTE: GeneClusters_All is intentionally skipped — the zero-filled block
+        # structure would dominate variance and produce a misleading heatmap.
+        cat("Joint All QC plots complete.\n", file=log_file, append=TRUE)
     }
 }
 
@@ -1578,9 +1641,18 @@ if (nrow(meta.rna) > 0) {
     if (!opt$test_run && "batch_date" %in% colnames(meta.rna) && has_var(meta.rna$batch_date)) f_rna <- paste0(f_rna, " + batch_date")
     if (!opt$test_run && "sample_type" %in% colnames(meta.rna) && has_var(meta.rna$sample_type)) f_rna <- paste0(f_rna, " + sample_type")
     
-    dge_rna <- DGEList(counts=counts[, rownames(meta.rna)], samples=data.frame(meta.rna))
+    # Use rna_counts_original (with transcript IDs) if available (translon mode)
+    # This ensures RNA contrasts report transcript IDs (ST_.../ENST...) not TM_...
+    rna_mat_for_fit <- if (exists("rna_counts_original")) {
+        cat("Using rna_counts_original (transcript IDs) for independent RNA model.\n", file=log_file, append=TRUE)
+        rna_counts_original
+    } else {
+        counts[, rownames(meta.rna), drop=FALSE]
+    }
+    # Strip _RNA suffix from colnames to match meta.rna rownames (counts_col)
+    rna_col_ids <- rownames(meta.rna)
+    dge_rna <- DGEList(counts=rna_mat_for_fit[, rna_col_ids, drop=FALSE], samples=data.frame(meta.rna))
     design.rna <- model.matrix(as.formula(f_rna), data=data.frame(meta.rna))
-    dge_rna <- estimateDisp(dge_rna, design.rna)
     dge_rna <- estimateDisp(dge_rna, design.rna)
     fit_rna <- glmQLFit(dge_rna, design.rna)
 }
