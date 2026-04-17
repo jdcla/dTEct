@@ -435,8 +435,11 @@ evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired
         out_prefix_sub <- paste0(outdir, "RNA/", contrast_id_sub)
         title_sub <- paste0(contrast_id_sub, n_msg, " (Shared)")
         
+        # Build remap: translon ID -> transcript ID (for RNA output from paired model)
+        rna_remap <- if (exists("translon_to_transcript_map")) translon_to_transcript_map else NULL
+        
         if (!is.null(grp_contrast_paired)) print(paste0("Evaluating RNA (Shared): ", grp_contrast_paired))
-        eval_contrast(fit_paired, grp_contrast_paired, out_prefix_sub, title_sub, log_file)
+        eval_contrast(fit_paired, grp_contrast_paired, out_prefix_sub, title_sub, log_file, id_remap = rna_remap)
 
         # 2. Independent Model -> Suffix "_RNA_full"
         grp_contrast_full <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design.rna)")
@@ -605,7 +608,7 @@ construct_contrast_string <- function(contrast_vals , seq_type, meta, weight_dic
 }
 
 
-eval_contrast <- function(fit, contrast, out_prefix, title, log_file) {
+eval_contrast <- function(fit, contrast, out_prefix, title, log_file, id_remap = NULL) {
     cleaned_contrast <- sub("^makeContrasts\\(", "", sub(", levels=.*\\)$", "", contrast))
     cat("Evaluating contrast ", title, " : ", cleaned_contrast, "\n", file = log_file, append = TRUE)
     
@@ -635,6 +638,13 @@ eval_contrast <- function(fit, contrast, out_prefix, title, log_file) {
         }
     }
 
+    # --- REMAP ROW IDs IF REQUESTED ---
+    # Used to convert e.g. ST_* (translon) row IDs back to TT_* (transcript) IDs
+    # for RNA contrasts from the paired model
+    if (!is.null(id_remap)) {
+        res$row_id <- ifelse(res$row_id %in% names(id_remap), id_remap[res$row_id], res$row_id)
+    }
+
     # --- MAPPING LOGIC ---
     if (has_tx) {
         maps_list <- list()
@@ -658,7 +668,11 @@ eval_contrast <- function(fit, contrast, out_prefix, title, log_file) {
                           filter(key_id != "" & !is.na(key_id)) %>%
                           distinct(key_id, .keep_all = TRUE)
             
-            res <- left_join(res, master_map, by=c("row_id" = "key_id"))
+            # Strip R's .N deduplication suffixes for the join key
+            # (e.g. TT_7_-_61798108.1 -> TT_7_-_61798108)
+            res$lookup_id <- sub("\\.[0-9]+$", "", res$row_id)
+            res <- left_join(res, master_map, by=c("lookup_id" = "key_id"))
+            res$lookup_id <- NULL
         }
         
         # Fill logic
@@ -1037,6 +1051,13 @@ if (!is.null(opt$rna_counts) && !is.null(opt$ribo_counts)) {
       # Ensure translon_id is unique (Key) by keeping the first occurrence
       distinct(translon_id, .keep_all = TRUE) %>%
       tibble::column_to_rownames("translon_id")
+
+    # Save a global named vector: translon_id -> transcript_id
+    # Used to remap IDs in RNA contrasts from the paired model
+    translon_to_transcript_map <<- setNames(
+        translon_rna_map$transcript_id,
+        rownames(translon_rna_map)
+    )
 
     # 2. Identify parent transcript for every Translon in Ribo matrix
     required_transcripts <- translon_rna_map[rownames(ribo_counts), "transcript_id"]
@@ -1466,6 +1487,16 @@ for (st in seq_types_present) {
     sub_dge <- dge[, dge$samples$seq_type == st, keep.lib.sizes=FALSE]
     if (ncol(sub_dge) > 0) {
         logcpm_counts <- cpm(sub_dge, normalized.lib.sizes = TRUE, log=TRUE, prior.count=1)
+        
+        # For RNA in translon mode, remap rownames from translon IDs back to transcript IDs
+        if (st == "RNA" && exists("translon_to_transcript_map")) {
+            current_ids <- rownames(logcpm_counts)
+            new_ids <- ifelse(current_ids %in% names(translon_to_transcript_map),
+                              translon_to_transcript_map[current_ids],
+                              current_ids)
+            rownames(logcpm_counts) <- new_ids
+        }
+        
         formatted_data <- tibble::rownames_to_column(data.frame(format(logcpm_counts, digits=3, nsmall = 3)), "Name")
         
         out_file <- paste0(opt$outdir, st, "_cpm_log_matrix.csv")
