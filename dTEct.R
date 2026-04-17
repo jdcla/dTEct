@@ -435,11 +435,8 @@ evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired
         out_prefix_sub <- paste0(outdir, "RNA/", contrast_id_sub)
         title_sub <- paste0(contrast_id_sub, n_msg, " (Shared)")
         
-        # Build remap: translon ID -> transcript ID (for RNA output from paired model)
-        rna_remap <- if (exists("translon_to_transcript_map")) translon_to_transcript_map else NULL
-        
         if (!is.null(grp_contrast_paired)) print(paste0("Evaluating RNA (Shared): ", grp_contrast_paired))
-        eval_contrast(fit_paired, grp_contrast_paired, out_prefix_sub, title_sub, log_file, id_remap = rna_remap)
+        eval_contrast(fit_paired, grp_contrast_paired, out_prefix_sub, title_sub, log_file)
 
         # 2. Independent Model -> Suffix "_RNA_full"
         grp_contrast_full <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design.rna)")
@@ -608,7 +605,7 @@ construct_contrast_string <- function(contrast_vals , seq_type, meta, weight_dic
 }
 
 
-eval_contrast <- function(fit, contrast, out_prefix, title, log_file, id_remap = NULL) {
+eval_contrast <- function(fit, contrast, out_prefix, title, log_file) {
     cleaned_contrast <- sub("^makeContrasts\\(", "", sub(", levels=.*\\)$", "", contrast))
     cat("Evaluating contrast ", title, " : ", cleaned_contrast, "\n", file = log_file, append = TRUE)
     
@@ -638,13 +635,6 @@ eval_contrast <- function(fit, contrast, out_prefix, title, log_file, id_remap =
         }
     }
 
-    # --- REMAP ROW IDs IF REQUESTED ---
-    # Used to convert e.g. ST_* (translon) row IDs back to TT_* (transcript) IDs
-    # for RNA contrasts from the paired model
-    if (!is.null(id_remap)) {
-        res$row_id <- ifelse(res$row_id %in% names(id_remap), id_remap[res$row_id], res$row_id)
-    }
-
     # --- MAPPING LOGIC ---
     if (has_tx) {
         maps_list <- list()
@@ -668,11 +658,20 @@ eval_contrast <- function(fit, contrast, out_prefix, title, log_file, id_remap =
                           filter(key_id != "" & !is.na(key_id)) %>%
                           distinct(key_id, .keep_all = TRUE)
             
-            # Strip R's .N deduplication suffixes for the join key
+            # Try exact match first
+            res <- left_join(res, master_map, by=c("row_id" = "key_id"))
+            
+            # For unmatched rows, try stripping R's .N deduplication suffix
             # (e.g. TT_7_-_61798108.1 -> TT_7_-_61798108)
-            res$lookup_id <- sub("\\.[0-9]+$", "", res$row_id)
-            res <- left_join(res, master_map, by=c("lookup_id" = "key_id"))
-            res$lookup_id <- NULL
+            unmatched <- is.na(res$real_gene_id) | res$real_gene_id == ""
+            if (any(unmatched, na.rm=TRUE)) {
+                stripped_ids <- sub("\\.[0-9]+$", "", res$row_id[unmatched])
+                retry <- master_map[match(stripped_ids, master_map$key_id), , drop=FALSE]
+                if (nrow(retry) > 0) {
+                    res$real_gene_id[unmatched]   <- retry$real_gene_id
+                    res$real_gene_name[unmatched] <- retry$real_gene_name
+                }
+            }
         }
         
         # Fill logic
@@ -1494,10 +1493,14 @@ for (st in seq_types_present) {
             new_ids <- ifelse(current_ids %in% names(translon_to_transcript_map),
                               translon_to_transcript_map[current_ids],
                               current_ids)
-            rownames(logcpm_counts) <- new_ids
+            rownames(logcpm_counts) <- make.unique(new_ids)
         }
         
-        formatted_data <- tibble::rownames_to_column(data.frame(format(logcpm_counts, digits=3, nsmall = 3)), "Name")
+        # Use check.names=FALSE to prevent make.names() from mangling +/- in IDs
+        formatted_data <- tibble::rownames_to_column(
+            data.frame(format(logcpm_counts, digits=3, nsmall = 3), check.names=FALSE),
+            "Name"
+        )
         
         out_file <- paste0(opt$outdir, st, "_cpm_log_matrix.csv")
         write.table(formatted_data, file=out_file, sep=",", row.names = FALSE)
