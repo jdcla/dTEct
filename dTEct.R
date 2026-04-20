@@ -705,8 +705,18 @@ eval_contrast <- function(fit, contrast, out_prefix, title, log_file) {
     }
 
     # 4. Final Formatting
+    # Add transcript_id column: for translon-mode RNA outputs, maps ST_* -> TT_*
+    # For RNA-only or gene-mode, transcript_id == row_id
+    res$transcript_id <- if (exists("translon_to_transcript_map") && any(res$row_id %in% names(translon_to_transcript_map))) {
+        ifelse(res$row_id %in% names(translon_to_transcript_map),
+               translon_to_transcript_map[res$row_id],
+               res$row_id)
+    } else {
+        res$row_id
+    }
+
     out_table <- res |> 
-        select(gene_id, gene_name, row_id, logFC, logCPM, any_of("F"), PValue, FDR) |> 
+        select(gene_id, gene_name, row_id, transcript_id, logFC, logCPM, any_of("F"), PValue, FDR) |> 
         arrange(PValue)
 
     write.csv(out_table, paste0(out_prefix, ".csv"), row.names=FALSE)
@@ -1073,7 +1083,7 @@ if (!is.null(opt$rna_counts) && !is.null(opt$ribo_counts)) {
     rna_counts_expanded <- rna_counts[parent_ids_for_translons, , drop=FALSE]
     
     # Save with original transcript rownames for the independent RNA-only model
-    # (transcript IDs must be preserved so RNA contrast output uses ST_.../ENST... IDs)
+    # (transcript IDs must be preserved so RNA contrast output uses TT_*/ENST... IDs)
     rna_counts_original <- rna_counts_expanded
 
     # 6. Align Rownames (Critical for edgeR pairing)
@@ -1679,7 +1689,7 @@ if (nrow(meta.rna) > 0) {
     if (!opt$test_run && "sample_type" %in% colnames(meta.rna) && has_var(meta.rna$sample_type)) f_rna <- paste0(f_rna, " + sample_type")
     
     # Use rna_counts_original (with transcript IDs) if available (translon mode)
-    # This ensures RNA contrasts report transcript IDs (ST_.../ENST...) not TM_...
+    # This ensures RNA contrasts report transcript IDs (TT_*/ENST...) not ST_*/TM_...
     rna_mat_for_fit <- if (exists("rna_counts_original")) {
         cat("Using rna_counts_original (transcript IDs) for independent RNA model.\n", file=log_file, append=TRUE)
         rna_counts_original
@@ -1699,12 +1709,12 @@ if (!is.null(opt$save_model)) {
     cat(paste0("Saving model to ", opt$save_model, "...\n"), file=log_file, append=TRUE)
     # List of objects to save to ensure the environment is reproducible
     # We save everything relevant for the contrast execution phase
-    save(
-        list = c("fit_paired", "fit_rna", "dge", "meta.samples", "design", "design.rna",
-                 "contrast_col", "uniq_dict", "comb_dict", "qc_types", "opt", "log_file", 
-                 "tx.table", "feature2name", "contrast_grps", "seq_types"), 
-        file = opt$save_model
-    )
+    save_objs <- c("fit_paired", "fit_rna", "dge", "meta.samples", "design", "design.rna",
+                   "contrast_col", "uniq_dict", "comb_dict", "qc_types", "opt", "log_file", 
+                   "tx.table", "feature2name", "contrast_grps", "seq_types")
+    # Only include translon_to_transcript_map if it exists (translon mode only)
+    if (exists("translon_to_transcript_map")) save_objs <- c(save_objs, "translon_to_transcript_map")
+    save(list = save_objs, file = opt$save_model)
     cat("Model saved successfully.\n", file=log_file, append=TRUE)
 }
 
