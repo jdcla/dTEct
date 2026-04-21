@@ -436,7 +436,7 @@ evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired
         title_sub <- paste0(contrast_id_sub, n_msg, " (Shared)")
         
         if (!is.null(grp_contrast_paired)) print(paste0("Evaluating RNA (Shared): ", grp_contrast_paired))
-        eval_contrast(fit_paired, grp_contrast_paired, out_prefix_sub, title_sub, log_file)
+        eval_contrast(fit_paired, grp_contrast_paired, out_prefix_sub, title_sub, log_file, remap_to_transcript = TRUE)
 
         # 2. Independent Model -> Suffix "_RNA_full"
         grp_contrast_full <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design.rna)")
@@ -605,7 +605,7 @@ construct_contrast_string <- function(contrast_vals , seq_type, meta, weight_dic
 }
 
 
-eval_contrast <- function(fit, contrast, out_prefix, title, log_file) {
+eval_contrast <- function(fit, contrast, out_prefix, title, log_file, remap_to_transcript = FALSE) {
     cleaned_contrast <- sub("^makeContrasts\\(", "", sub(", levels=.*\\)$", "", contrast))
     cat("Evaluating contrast ", title, " : ", cleaned_contrast, "\n", file = log_file, append = TRUE)
     
@@ -613,6 +613,14 @@ eval_contrast <- function(fit, contrast, out_prefix, title, log_file) {
     lrt <- glmQLFTest(fit, contrast=eval(parse(text = contrast)))
     res <- topTags(lrt, n=Inf)$table
     res <- res |> tibble::rownames_to_column('row_id')
+    
+    # For RNA contrasts from the paired model, remap row_id from translon to transcript IDs
+    # This ensures RNA outputs report TT_*/ENST... instead of ST_*/TM_...
+    if (remap_to_transcript && exists("translon_to_transcript_map")) {
+        res$row_id <- ifelse(res$row_id %in% names(translon_to_transcript_map),
+                             translon_to_transcript_map[res$row_id],
+                             res$row_id)
+    }
     
     has_tx <- exists("tx.table")
     
