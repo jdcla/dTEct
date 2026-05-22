@@ -32,6 +32,9 @@ validate_inputs <- function(opt) {
   if (is.null(opt$rna_counts) && is.null(opt$ribo_counts)) {
     errors <- c(errors, "You must provide at least one count matrix (--rna_counts or --ribo_counts).")
   }
+  if (isTRUE(opt$use_anota2) && (is.null(opt$rna_counts) || is.null(opt$ribo_counts))) {
+    errors <- c(errors, "anota2seq mode requires both --rna_counts and --ribo_counts.")
+  }
   
   # 3. Validate Tx Table Columns
   if (!is.null(opt$tx_table_path) && file.exists(opt$tx_table_path)) {
@@ -429,22 +432,27 @@ evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired
 
     if (has_ribo_data) {
         # --- CASE A: DUAL MODE (Ribo exists) ---
-        # 1. Paired/Shared Model -> Suffix "_RNA"
-        grp_contrast_paired <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design)")
         contrast_id_sub <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA")
         out_prefix_sub <- paste0(outdir, "RNA/", contrast_id_sub)
-        title_sub <- paste0(contrast_id_sub, n_msg, " (Shared)")
-        
-        if (!is.null(grp_contrast_paired)) print(paste0("Evaluating RNA (Shared): ", grp_contrast_paired))
-        eval_contrast(fit_paired, grp_contrast_paired, out_prefix_sub, title_sub, log_file, remap_to_transcript = TRUE)
+        if (isTRUE(opt$use_anota2)) {
+            title_sub <- paste0(contrast_id_sub, n_msg, " (anota2seq total mRNA)")
+            eval_anota2seq_contrast(fit_anota2seq, grp_rna[[1]], grp_rna[[2]], "RNA", "total mRNA", out_prefix_sub, title_sub, log_file)
+        } else {
+            # 1. Paired/Shared Model -> Suffix "_RNA"
+            grp_contrast_paired <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design)")
+            title_sub <- paste0(contrast_id_sub, n_msg, " (Shared)")
 
-        # 2. Independent Model -> Suffix "_RNA_full"
-        grp_contrast_full <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design.rna)")
-        contrast_id_full <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA_full")
-        out_prefix_full <- paste0(outdir, "RNA/", contrast_id_full)
-        title_full <- paste0(contrast_id_full, n_msg, " (All)")
-        
-        eval_contrast(fit_rna, grp_contrast_full, out_prefix_full, title_full, log_file)
+            if (!is.null(grp_contrast_paired)) print(paste0("Evaluating RNA (Shared): ", grp_contrast_paired))
+            eval_contrast(fit_paired, grp_contrast_paired, out_prefix_sub, title_sub, log_file, remap_to_transcript = TRUE)
+
+            # 2. Independent Model -> Suffix "_RNA_full"
+            grp_contrast_full <- paste0("makeContrasts(", paste(grp_rna, collapse = " - "), ", levels=design.rna)")
+            contrast_id_full <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA_full")
+            out_prefix_full <- paste0(outdir, "RNA/", contrast_id_full)
+            title_full <- paste0(contrast_id_full, n_msg, " (All)")
+
+            eval_contrast(fit_rna, grp_contrast_full, out_prefix_full, title_full, log_file)
+        }
         
     } else {
         # --- CASE B: RNA-ONLY MODE ---
@@ -461,27 +469,37 @@ evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired
   # --- 2. Ribo Contrasts ---
   if (length(unlist(grp_ribo)) == 2) {
     n_msg <- paste0("    (n = ", n_ribo[[1]], " / ", n_ribo[[2]], ")")
-    
-    grp_contrast <- paste0("makeContrasts(", paste(grp_ribo, collapse = " - "), ", levels=design)")
+
     contrast_id <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_Ribo")
     out_prefix <- paste0(outdir, "Ribo/", contrast_id)
-    title <- paste0(contrast_id, n_msg, " (Shared/Paired)")
-    
-    if (!is.null(grp_contrast)) print(paste0("Evaluating Ribo: ", grp_contrast))
-    eval_contrast(fit_paired, grp_contrast, out_prefix, title, log_file)
+    if (isTRUE(opt$use_anota2)) {
+        title <- paste0(contrast_id, n_msg, " (anota2seq translated mRNA)")
+        eval_anota2seq_contrast(fit_anota2seq, grp_ribo[[1]], grp_ribo[[2]], "Ribo", "translated mRNA", out_prefix, title, log_file)
+    } else {
+        grp_contrast <- paste0("makeContrasts(", paste(grp_ribo, collapse = " - "), ", levels=design)")
+        title <- paste0(contrast_id, n_msg, " (Shared/Paired)")
+
+        if (!is.null(grp_contrast)) print(paste0("Evaluating Ribo: ", grp_contrast))
+        eval_contrast(fit_paired, grp_contrast, out_prefix, title, log_file)
+    }
   }
   
   # --- 3. dTE Contrast ---
   if ((length(unlist(grp_ribo)) == 2) && (length(unlist(grp_rna)) == 2)) {
-    left_cmd <- paste0("(", grp_ribo[[1]], " - ", grp_rna[[1]], ")")
-    right_cmd <- paste0("(", grp_ribo[[2]], " - ", grp_rna[[2]], ")")
-    grp_contrast <- paste0("makeContrasts(", left_cmd, " - ", right_cmd, ", levels=design)")
     contrast_id <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_dTE")
     out_prefix <- paste0(outdir, "dTE/", contrast_id)
     title <- paste0(contrast_id, "    (n = ", n_ribo[[1]], " / ", n_rna[[1]], " / ", n_ribo[[2]], " / ", n_rna[[2]], ")")
-    
-    if (!is.null(grp_contrast)) print(grp_contrast)
-    eval_contrast(fit_paired, grp_contrast, out_prefix, title, log_file)
+
+    if (isTRUE(opt$use_anota2)) {
+        eval_anota2seq_contrast(fit_anota2seq, grp_ribo[[1]], grp_ribo[[2]], "Ribo", "translation", out_prefix, title, log_file)
+    } else {
+        left_cmd <- paste0("(", grp_ribo[[1]], " - ", grp_rna[[1]], ")")
+        right_cmd <- paste0("(", grp_ribo[[2]], " - ", grp_rna[[2]], ")")
+        grp_contrast <- paste0("makeContrasts(", left_cmd, " - ", right_cmd, ", levels=design)")
+
+        if (!is.null(grp_contrast)) print(grp_contrast)
+        eval_contrast(fit_paired, grp_contrast, out_prefix, title, log_file)
+    }
   }
 }
 
@@ -604,16 +622,64 @@ construct_contrast_string <- function(contrast_vals , seq_type, meta, weight_dic
   return(paste0("(", grp_string, ")"))
 }
 
+parse_anota2seq_group_weights <- function(group_string, seq_type) {
+    pattern <- paste0("([0-9eE.+-]+)\\*group([^ +()]+)__", seq_type)
+    matches <- gregexpr(pattern, group_string, perl=TRUE)
+    tokens <- regmatches(group_string, matches)[[1]]
 
-eval_contrast <- function(fit, contrast, out_prefix, title, log_file, remap_to_transcript = FALSE) {
-    cleaned_contrast <- sub("^makeContrasts\\(", "", sub(", levels=.*\\)$", "", contrast))
-    cat("Evaluating contrast ", title, " : ", cleaned_contrast, "\n", file = log_file, append = TRUE)
-    
-    # 1. Evaluate
-    lrt <- glmQLFTest(fit, contrast=eval(parse(text = contrast)))
-    res <- topTags(lrt, n=Inf)$table
-    res <- res |> tibble::rownames_to_column('row_id')
-    
+    if (length(tokens) == 0 || tokens[1] == "") {
+        stop(paste0("Could not parse anota2seq contrast group: ", group_string))
+    }
+
+    weights <- c()
+    for (token in tokens) {
+        parts <- regmatches(token, regexec(pattern, token, perl=TRUE))[[1]]
+        group_name <- parts[3]
+        weight <- as.numeric(parts[2])
+        weights[group_name] <- ifelse(group_name %in% names(weights), weights[group_name] + weight, weight)
+    }
+    return(weights)
+}
+
+make_anota2seq_contrast_matrix <- function(left_group, right_group, seq_type, pheno_levels) {
+    left_weights <- parse_anota2seq_group_weights(left_group, seq_type)
+    right_weights <- parse_anota2seq_group_weights(right_group, seq_type)
+
+    missing_groups <- setdiff(unique(c(names(left_weights), names(right_weights))), pheno_levels)
+    if (length(missing_groups) > 0) {
+        stop(paste0("anota2seq contrast contains groups absent from paired samples: ", paste(missing_groups, collapse=", ")))
+    }
+
+    contrast <- matrix(0, nrow=length(pheno_levels), ncol=1)
+    rownames(contrast) <- pheno_levels
+    colnames(contrast) <- "contrast1"
+    contrast[names(left_weights), 1] <- left_weights
+    contrast[names(right_weights), 1] <- contrast[names(right_weights), 1] - right_weights
+    needed_cols <- length(pheno_levels) - 1
+    if (needed_cols > 1) {
+        current <- contrast
+        group_pairs <- combn(pheno_levels, 2, simplify=FALSE)
+        for (pair in group_pairs) {
+            if (ncol(current) >= needed_cols) break
+            filler_col <- matrix(0, nrow=length(pheno_levels), ncol=1)
+            rownames(filler_col) <- pheno_levels
+            filler_col[pair[1], 1] <- 1
+            filler_col[pair[2], 1] <- -1
+            trial <- cbind(current, filler_col)
+            if (qr(trial)$rank > qr(current)$rank) {
+                current <- trial
+            }
+        }
+        if (ncol(current) < needed_cols || qr(current)$rank < needed_cols) {
+            stop("could not construct full-rank anota2seq contrast matrix")
+        }
+        contrast <- current
+        colnames(contrast) <- c("contrast1", paste0("filler", seq_len(ncol(contrast) - 1)))
+    }
+    return(contrast)
+}
+
+finalize_contrast_result <- function(res, out_prefix, title, remap_to_transcript = FALSE) {
     # For RNA contrasts from the paired model, remap row_id from translon to transcript IDs
     # This ensures RNA outputs report TT_*/ENST... instead of ST_*/TM_...
     if (remap_to_transcript && exists("translon_to_transcript_map")) {
@@ -748,6 +814,133 @@ eval_contrast <- function(fit, contrast, out_prefix, title, log_file, remap_to_t
 }
 
 
+eval_contrast <- function(fit, contrast, out_prefix, title, log_file, remap_to_transcript = FALSE) {
+    cleaned_contrast <- sub("^makeContrasts\\(", "", sub(", levels=.*\\)$", "", contrast))
+    cat("Evaluating contrast ", title, " : ", cleaned_contrast, "\n", file = log_file, append = TRUE)
+
+    # 1. Evaluate
+    lrt <- glmQLFTest(fit, contrast=eval(parse(text = contrast)))
+    res <- topTags(lrt, n=Inf)$table
+    res <- res |> tibble::rownames_to_column('row_id')
+    finalize_contrast_result(res, out_prefix, title, remap_to_transcript)
+}
+
+eval_anota2seq_contrast <- function(ads, left_group, right_group, seq_type, analysis, out_prefix, title, log_file) {
+    covariates <- anota2seq::anota2seqGetCovariates(ads)
+    pheno_levels <- levels(factor(covariates$phenoVec))
+    contrast <- tryCatch(
+        make_anota2seq_contrast_matrix(left_group, right_group, seq_type, pheno_levels),
+        error = function(e) {
+            cat("Skipping anota2seq contrast ", title, " (", conditionMessage(e), ")\n", file = log_file, append = TRUE)
+            return(NULL)
+        }
+    )
+    if (is.null(contrast)) return(NULL)
+    active_groups <- rownames(contrast)[contrast[,1] != 0]
+    group_counts <- table(covariates$phenoVec)
+
+    if (any(group_counts[active_groups] < 2)) {
+        cat("Skipping anota2seq contrast ", title, " (insufficient paired samples)\n", file = log_file, append = TRUE)
+        return(NULL)
+    }
+
+    cat("Evaluating anota2seq ", analysis, " contrast ", title, "\n", file = log_file, append = TRUE)
+    ads_res <- anota2seq::anota2seqAnalyze(
+        Anota2seqDataSet = ads,
+        contrasts = contrast,
+        analysis = analysis,
+        useProgBar = FALSE,
+        fileStem = tempfile("anota2seq_", tmpdir=tempdir())
+    )
+
+    res <- as.data.frame(anota2seq::anota2seqGetOutput(
+        object = ads_res,
+        analysis = analysis,
+        output = "full",
+        selContrast = 1,
+        getRVM = TRUE
+    ))
+    res <- res |> tibble::rownames_to_column('row_id')
+    res$logFC <- res$apvEff
+    logcpm <- if (exists("anota2seq_logcpm") && analysis %in% names(anota2seq_logcpm)) anota2seq_logcpm[[analysis]] else NULL
+    res$logCPM <- if (!is.null(logcpm)) logcpm[match(res$row_id, names(logcpm))] else NA_real_
+    res$F <- res$apvRvmF
+    res$PValue <- res$apvRvmP
+    res$FDR <- res$apvRvmPAdj
+
+    finalize_contrast_result(res, out_prefix, title)
+}
+
+build_anota2seq_dataset <- function(dge, log_file) {
+    meta_rna <- dge$samples[dge$samples$seq_type == "RNA", , drop=FALSE]
+    meta_ribo <- dge$samples[dge$samples$seq_type == "Ribo", , drop=FALSE]
+    shared_ids <- intersect(as.character(meta_rna$smart_id), as.character(meta_ribo$smart_id))
+
+    if (length(shared_ids) < 4) {
+        stop("anota2seq mode requires at least four paired RNA/Ribo biological samples.")
+    }
+
+    rna_col_lookup <- setNames(rownames(meta_rna), as.character(meta_rna$smart_id))
+    ribo_col_lookup <- setNames(rownames(meta_ribo), as.character(meta_ribo$smart_id))
+    rna_cols <- rna_col_lookup[shared_ids]
+    ribo_cols <- ribo_col_lookup[shared_ids]
+
+    dataT <- as.matrix(dge$counts[, rna_cols, drop=FALSE])
+    dataP <- as.matrix(dge$counts[, ribo_cols, drop=FALSE])
+    colnames(dataT) <- shared_ids
+    colnames(dataP) <- shared_ids
+
+    phenoVec <- sub("__RNA$", "", as.character(meta_rna[rna_cols, "group"]))
+    pheno_counts <- table(phenoVec)
+    keep_pairs <- phenoVec %in% names(pheno_counts[pheno_counts >= 2])
+    if (sum(!keep_pairs) > 0) {
+        cat(sprintf("Dropping %d paired samples from anota2seq setup because their groups have n < 2.\n", sum(!keep_pairs)), file=log_file, append=TRUE)
+        dataT <- dataT[, keep_pairs, drop=FALSE]
+        dataP <- dataP[, keep_pairs, drop=FALSE]
+        shared_ids <- shared_ids[keep_pairs]
+        rna_cols <- rna_cols[keep_pairs]
+        ribo_cols <- ribo_cols[keep_pairs]
+        phenoVec <- phenoVec[keep_pairs]
+    }
+    if (length(unique(phenoVec)) < 2) {
+        stop("anota2seq mode requires at least two paired sample classes with n >= 2.")
+    }
+    batchVec <- NULL
+    if ("sample_type" %in% colnames(meta_rna) && length(unique(as.character(meta_rna[rna_cols, "sample_type"]))) > 1) {
+        batchVec <- as.character(meta_rna[rna_cols, "sample_type"])
+        cat("Using sample_type as anota2seq batchVec.\n", file=log_file, append=TRUE)
+    } else if ("batch_date" %in% colnames(meta_rna) && "batch_date" %in% colnames(meta_ribo)) {
+        rna_batch <- as.character(meta_rna[rna_cols, "batch_date"])
+        ribo_batch <- as.character(meta_ribo[ribo_cols, "batch_date"])
+        if (all(rna_batch == ribo_batch) && length(unique(rna_batch)) > 1) {
+            batchVec <- rna_batch
+            cat("Using batch_date as anota2seq batchVec.\n", file=log_file, append=TRUE)
+        }
+    }
+
+    cat(sprintf("Building anota2seq dataset from %d paired samples and %d features.\n", length(shared_ids), nrow(dataP)), file=log_file, append=TRUE)
+    ads <- anota2seq::anota2seqDataSetFromMatrix(
+        dataP = dataP,
+        dataT = dataT,
+        phenoVec = phenoVec,
+        batchVec = batchVec,
+        dataType = "RNAseq",
+        normalize = TRUE,
+        transformation = "TMM-log2",
+        filterZeroGenes = FALSE,
+        varCutOff = NULL
+    )
+
+    norm_data <- anota2seq::anota2seqGetNormalizedData(ads)
+    anota2seq_logcpm <<- list(
+        "translated mRNA" = rowMeans(norm_data$dataP, na.rm=TRUE),
+        "total mRNA" = rowMeans(norm_data$dataT, na.rm=TRUE),
+        "translation" = rowMeans(cbind(norm_data$dataP, norm_data$dataT), na.rm=TRUE)
+    )
+    return(ads)
+}
+
+
 parse_groups <- function(groups) {
   # Trim leading and trailing whitespace from the entire string
   groups <- trimws(groups)
@@ -830,7 +1023,8 @@ option_list <- list(
     make_option(c("-S", "--save_model"), type="character", default=NULL, metavar="path", help="Path to save the fitted model (RData file). Defaults to 'dTEct_model.RData' in outdir if not specified. Ignored if --load_model is used."),
     make_option(c("-L", "--load_model"), type="character", default=NULL, metavar="path", help="Path to load a pre-fitted model from (skips fitting)."),
     make_option(c("-k", "--skip_pairwise"), action="store_true", default=FALSE, help="If set, skips all pairwise contrasts and only runs One-vs-All (if enabled)."),
-    make_option(c("-T", "--test_run"), action="store_true", default=FALSE, help="Run in test mode: subsets data to first valid contrast and fraction of genes for rapid debugging.")
+    make_option(c("-T", "--test_run"), action="store_true", default=FALSE, help="Run in test mode: subsets data to first valid contrast and fraction of genes for rapid debugging."),
+    make_option(c("-A", "--use_anota2"), action="store_true", default=FALSE, help="Use anota2seq for RNA, Ribo, and dTE contrasts. TE output is not generated in this mode.")
 )
 
 opt_parser <- OptionParser(option_list=option_list)
@@ -843,6 +1037,9 @@ if (is.null(opt$load_model)) {
   if (!file.exists(opt$load_model)) {
     stop(paste("Model file not found:", opt$load_model))
   }
+}
+if (isTRUE(opt$use_anota2) && !requireNamespace("anota2seq", quietly=TRUE)) {
+  stop("Package 'anota2seq' is required for --use_anota2.")
 }
 
 
@@ -888,6 +1085,7 @@ log_file <- paste0(opt$outdir, "run_info.txt")
 if (!is.null(opt$load_model)) {
   cat(paste0("Loading model from ", opt$load_model, "...\n"))
   load(opt$load_model)
+  if (is.null(opt$use_anota2)) opt$use_anota2 <- FALSE
   # Update internal opt with new run parameters if needed (e.g. outdir change)
   # We generally want to keep the fitted objects but maybe change output location
   # For now, we assume the user provides consistent args or we rely on the loaded environment
@@ -1040,7 +1238,9 @@ if (!is.null(opt$tx_table_path)) {
 dir.create(paste0(opt$outdir, 'dTE'), showWarnings = FALSE, recursive = TRUE)
 dir.create(paste0(opt$outdir, 'Ribo'), showWarnings = FALSE, recursive = TRUE)
 dir.create(paste0(opt$outdir, 'RNA'), showWarnings = FALSE, recursive = TRUE)
-dir.create(paste0(opt$outdir, 'TE'), showWarnings = FALSE, recursive = TRUE)
+if (!isTRUE(opt$use_anota2)) {
+  dir.create(paste0(opt$outdir, 'TE'), showWarnings = FALSE, recursive = TRUE)
+}
 
 # Intersect RNA and Ribo counts -------------------------------------------------
 
@@ -1683,33 +1883,41 @@ if (num_valid_contrasts == 0) {
 }
 
 # Fit Models
-cat("Valid contrasts found. Fitting GLM models...\n", file=log_file, append=TRUE)
-dge <- estimateDisp(dge, design, min.row.sum=30)
-fit_paired <- glmQLFit(dge, design)
+if (isTRUE(opt$use_anota2)) {
+    cat("Valid contrasts found. Building anota2seq model...\n", file=log_file, append=TRUE)
+    fit_paired <- NULL
+    fit_rna <- NULL
+    design.rna <- NULL
+    fit_anota2seq <- build_anota2seq_dataset(dge, log_file)
+} else {
+    cat("Valid contrasts found. Fitting GLM models...\n", file=log_file, append=TRUE)
+    dge <- estimateDisp(dge, design, min.row.sum=30)
+    fit_paired <- glmQLFit(dge, design)
 
-# Fit Independent RNA Model
-fit_rna <- NULL
-meta.rna <- meta.design[meta.design$seq_type == "RNA", , drop=FALSE]
-if (nrow(meta.rna) > 0) {
-    meta.rna <- droplevels(meta.rna)
-    f_rna <- "~0 + group"
-    if (!opt$test_run && "batch_date" %in% colnames(meta.rna) && has_var(meta.rna$batch_date)) f_rna <- paste0(f_rna, " + batch_date")
-    if (!opt$test_run && "sample_type" %in% colnames(meta.rna) && has_var(meta.rna$sample_type)) f_rna <- paste0(f_rna, " + sample_type")
-    
-    # Use rna_counts_original (with transcript IDs) if available (translon mode)
-    # This ensures RNA contrasts report transcript IDs (TT_*/ENST...) not ST_*/TM_...
-    rna_mat_for_fit <- if (exists("rna_counts_original")) {
-        cat("Using rna_counts_original (transcript IDs) for independent RNA model.\n", file=log_file, append=TRUE)
-        rna_counts_original
-    } else {
-        counts[, rownames(meta.rna), drop=FALSE]
+    # Fit Independent RNA Model
+    fit_rna <- NULL
+    meta.rna <- meta.design[meta.design$seq_type == "RNA", , drop=FALSE]
+    if (nrow(meta.rna) > 0) {
+        meta.rna <- droplevels(meta.rna)
+        f_rna <- "~0 + group"
+        if (!opt$test_run && "batch_date" %in% colnames(meta.rna) && has_var(meta.rna$batch_date)) f_rna <- paste0(f_rna, " + batch_date")
+        if (!opt$test_run && "sample_type" %in% colnames(meta.rna) && has_var(meta.rna$sample_type)) f_rna <- paste0(f_rna, " + sample_type")
+
+        # Use rna_counts_original (with transcript IDs) if available (translon mode)
+        # This ensures RNA contrasts report transcript IDs (TT_*/ENST...) not ST_*/TM_...
+        rna_mat_for_fit <- if (exists("rna_counts_original")) {
+            cat("Using rna_counts_original (transcript IDs) for independent RNA model.\n", file=log_file, append=TRUE)
+            rna_counts_original
+        } else {
+            counts[, rownames(meta.rna), drop=FALSE]
+        }
+        # Strip _RNA suffix from colnames to match meta.rna rownames (counts_col)
+        rna_col_ids <- rownames(meta.rna)
+        dge_rna <- DGEList(counts=rna_mat_for_fit[, rna_col_ids, drop=FALSE], samples=data.frame(meta.rna))
+        design.rna <- model.matrix(as.formula(f_rna), data=data.frame(meta.rna))
+        dge_rna <- estimateDisp(dge_rna, design.rna)
+        fit_rna <- glmQLFit(dge_rna, design.rna)
     }
-    # Strip _RNA suffix from colnames to match meta.rna rownames (counts_col)
-    rna_col_ids <- rownames(meta.rna)
-    dge_rna <- DGEList(counts=rna_mat_for_fit[, rna_col_ids, drop=FALSE], samples=data.frame(meta.rna))
-    design.rna <- model.matrix(as.formula(f_rna), data=data.frame(meta.rna))
-    dge_rna <- estimateDisp(dge_rna, design.rna)
-    fit_rna <- glmQLFit(dge_rna, design.rna)
 }
 
 # --- SAVE MODEL LOGIC ---
@@ -1717,11 +1925,16 @@ if (!is.null(opt$save_model)) {
     cat(paste0("Saving model to ", opt$save_model, "...\n"), file=log_file, append=TRUE)
     # List of objects to save to ensure the environment is reproducible
     # We save everything relevant for the contrast execution phase
-    save_objs <- c("fit_paired", "fit_rna", "dge", "meta.samples", "design", "design.rna",
-                   "contrast_col", "uniq_dict", "comb_dict", "qc_types", "opt", "log_file", 
-                   "tx.table", "feature2name", "contrast_grps", "seq_types")
+    save_objs <- c("dge", "meta.samples", "design", "contrast_col", "uniq_dict", "comb_dict",
+                   "qc_types", "opt", "log_file", "tx.table", "feature2name", "contrast_grps", "seq_types")
+    if (isTRUE(opt$use_anota2)) {
+        save_objs <- c(save_objs, "fit_anota2seq", "anota2seq_logcpm")
+    } else {
+        save_objs <- c(save_objs, "fit_paired", "fit_rna", "design.rna")
+    }
     # Only include translon_to_transcript_map if it exists (translon mode only)
     if (exists("translon_to_transcript_map")) save_objs <- c(save_objs, "translon_to_transcript_map")
+    save_objs <- save_objs[save_objs %in% ls()]
     save(list = save_objs, file = opt$save_model)
     cat("Model saved successfully.\n", file=log_file, append=TRUE)
 }
@@ -1738,9 +1951,13 @@ dge.meta <- meta.samples[dge_idxs,]
 cat("Executing contrasts...\n", file=log_file, append=TRUE)
 
 # Execute Unique Contrasts (TE mostly, uses Paired Fit)
-bplapply(uniq_dict[[contrast_col]], function(val) {
-    evaluate_unique_contrast(dge$samples, val, contrast_col, fit_paired, opt$outdir, log_file)
-})
+if (!isTRUE(opt$use_anota2)) {
+    bplapply(uniq_dict[[contrast_col]], function(val) {
+        evaluate_unique_contrast(dge$samples, val, contrast_col, fit_paired, opt$outdir, log_file)
+    })
+} else {
+    cat("Skipping TE contrasts in anota2seq mode.\n", file=log_file, append=TRUE)
+}
 
 # Execute Combination Contrasts (DE & dTE, uses Paired + RNA Independent Fit)
 # Execute Combination Contrasts (DE & dTE, uses Paired + RNA Independent Fit)

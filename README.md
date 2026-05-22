@@ -155,6 +155,7 @@ This section details the command-line options and the logic behind the automated
 | `-L`, `--load_model`   | path          | `NULL`             | Path to load a pre-fitted model from. Skips data processing and model fitting.                                                            |
 | `-k`, `--skip_pairwise`| flag          | `FALSE`            | If set, skips the exhaustive pairwise contrasts and only runs One-vs-All (if enabled).                                                    |
 | `-T`, `--test_run`     | flag          | `FALSE`            | Run in test mode: subsets data to first valid contrast and fraction of genes for rapid debugging. |
+| `-A`, `--use_anota2`   | flag          | `FALSE`            | Use `anota2seq` for RNA, Ribo, and dTE contrasts. TE output is not generated in this mode. |
 
 ### Designing Contrasts (`--contrast_cols`)
 
