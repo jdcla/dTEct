@@ -316,13 +316,47 @@ eval_gene_clusters <- function(norm_counts, meta, meta_cols, prefix, suffix) {
   }
 }
 
-evaluate_combination_contrast <- function(meta, tup, contrast_col, fit_paired, fit_rna, outdir, log_file) {
+calc_assay_norm_factors <- function(dge, assay_col = "seq_type", method = "TMM", log_file = NULL) {
+    if (!assay_col %in% colnames(dge$samples)) {
+        if (!is.null(log_file)) {
+            cat("Assay column not found; falling back to global TMM normalization.\n", file=log_file, append=TRUE)
+        }
+        return(calcNormFactors(dge, method=method))
+    }
+
+    dge$samples$norm.factors <- 1
+    assays <- sort(unique(as.character(dge$samples[[assay_col]])))
+    if (!is.null(log_file)) {
+        cat("Using assay-specific TMM normalization by ", assay_col, ".\n", sep="", file=log_file, append=TRUE)
+    }
+
+    for (assay in assays) {
+        idx <- as.character(dge$samples[[assay_col]]) == assay
+        if (sum(idx) < 2) {
+            if (!is.null(log_file)) {
+                cat("  Skipping TMM for assay '", assay, "' (fewer than 2 samples).\n", sep="", file=log_file, append=TRUE)
+            }
+            next
+        }
+
+        sub_dge <- dge[, idx, keep.lib.sizes=FALSE]
+        sub_dge <- calcNormFactors(sub_dge, method=method)
+        dge$samples$norm.factors[idx] <- sub_dge$samples$norm.factors
+        if (!is.null(log_file)) {
+            cat("  Normalized assay '", assay, "' with ", sum(idx), " samples.\n", sep="", file=log_file, append=TRUE)
+        }
+    }
+
+    dge
+}
+
+build_combination_contrast_args <- function(meta, tup, contrast_col) {
   rna_mask <- meta$seq_type == "RNA"
   ribo_mask <- meta$seq_type == "Ribo"
-  
+
   # NEW: Detect Global Mode (Dual vs RNA-only)
   has_ribo_data <- any(ribo_mask)
-  
+
   grp_rna <- list(); grp_ribo <- list(); n_rna <- list(); n_ribo <- list(); order <- list()
 
   for (i in seq_along(tup)) {
@@ -352,18 +386,23 @@ evaluate_combination_contrast <- function(meta, tup, contrast_col, fit_paired, f
       order[[i]] <- sum(meta[ribo_grp_mask, "control"] == "test")
     }
   }
-  
+
   if ((length(order) == 2) && (order[[1]] < order[[2]])) {
     if (length(grp_rna) == 2) { grp_rna <- grp_rna[c(2, 1)]; n_rna <- n_rna[c(2, 1)] }
     if (length(grp_ribo) == 2) { grp_ribo <- grp_ribo[c(2, 1)]; n_ribo <- n_ribo[c(2, 1)] }
     tup <- tup[c(2, 1)]
   }
-  
-  # PASS has_ribo_data flag
-  evaluate_contrasts(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired, fit_rna, has_ribo_data, outdir, log_file)
+
+  return(list(grp_rna=grp_rna, grp_ribo=grp_ribo, tup=tup, n_rna=n_rna, n_ribo=n_ribo, has_ribo_data=has_ribo_data))
 }
 
-exec_one_vs_all <- function(meta, target_group, contrast_col, fit_paired, fit_rna, has_ribo_data, outdir, log_file) {
+evaluate_combination_contrast <- function(meta, tup, contrast_col, fit_paired, fit_rna, outdir, log_file) {
+  args <- build_combination_contrast_args(meta, tup, contrast_col)
+  # PASS has_ribo_data flag
+  evaluate_contrasts(args$grp_rna, args$grp_ribo, args$tup, args$n_rna, args$n_ribo, fit_paired, fit_rna, args$has_ribo_data, outdir, log_file)
+}
+
+build_one_vs_all_contrast_args <- function(meta, target_group, contrast_col, has_ribo_data) {
     # 1. Identify Target vs Other Samples
     # Note: We use startsWith to capture hierarchies (e.g. Target="MBL" includes "MBL.SHH")
     target_mask <- startsWith(as.character(meta[[contrast_col]]), target_group)
@@ -417,10 +456,17 @@ exec_one_vs_all <- function(meta, target_group, contrast_col, fit_paired, fit_rn
         grp_ribo <- list(t_ribo$s, o_ribo$s)
         n_ribo <- list(t_ribo$n, o_ribo$n)
     }
-    
+
+    return(list(grp_rna=grp_rna, grp_ribo=grp_ribo, tup=tup_fake, n_rna=n_rna, n_ribo=n_ribo, has_ribo_data=has_ribo_data))
+}
+
+exec_one_vs_all <- function(meta, target_group, contrast_col, fit_paired, fit_rna, has_ribo_data, outdir, log_file) {
+    args <- build_one_vs_all_contrast_args(meta, target_group, contrast_col, has_ribo_data)
+    if (is.null(args)) return(NULL)
+
     # Pass to existing function
     # It will handle the file creation, fitting, and plotting
-    evaluate_contrasts(grp_rna, grp_ribo, tup_fake, n_rna, n_ribo, fit_paired, fit_rna, has_ribo_data, outdir, log_file)
+    evaluate_contrasts(args$grp_rna, args$grp_ribo, args$tup, args$n_rna, args$n_ribo, fit_paired, fit_rna, args$has_ribo_data, outdir, log_file)
 }
 
 evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired, fit_rna, has_ribo_data, outdir, log_file) {
@@ -501,6 +547,84 @@ evaluate_contrasts <- function(grp_rna, grp_ribo, tup, n_rna, n_ribo, fit_paired
         eval_contrast(fit_paired, grp_contrast, out_prefix, title, log_file)
     }
   }
+}
+
+collect_anota2seq_jobs_from_args <- function(args, outdir) {
+  jobs <- list()
+  if (is.null(args)) return(jobs)
+
+  grp_rna <- args$grp_rna
+  grp_ribo <- args$grp_ribo
+  tup <- args$tup
+  n_rna <- args$n_rna
+  n_ribo <- args$n_ribo
+  has_ribo_data <- args$has_ribo_data
+  strat_string <- ""
+
+  if (has_ribo_data && length(unlist(grp_rna)) == 2) {
+    n_msg <- paste0("    (n = ", n_rna[[1]], " / ", n_rna[[2]], ")")
+    contrast_id <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_RNA")
+    jobs[[length(jobs) + 1]] <- list(
+        analysis = "total mRNA",
+        seq_type = "RNA",
+        left_group = grp_rna[[1]],
+        right_group = grp_rna[[2]],
+        out_prefix = paste0(outdir, "RNA/", contrast_id),
+        title = paste0(contrast_id, n_msg, " (anota2seq total mRNA)")
+    )
+  }
+
+  if (length(unlist(grp_ribo)) == 2) {
+    n_msg <- paste0("    (n = ", n_ribo[[1]], " / ", n_ribo[[2]], ")")
+    contrast_id <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_Ribo")
+    jobs[[length(jobs) + 1]] <- list(
+        analysis = "translated mRNA",
+        seq_type = "Ribo",
+        left_group = grp_ribo[[1]],
+        right_group = grp_ribo[[2]],
+        out_prefix = paste0(outdir, "Ribo/", contrast_id),
+        title = paste0(contrast_id, n_msg, " (anota2seq translated mRNA)")
+    )
+  }
+
+  if ((length(unlist(grp_ribo)) == 2) && (length(unlist(grp_rna)) == 2)) {
+    contrast_id <- paste0(tup[[1]], "__", tup[[2]], strat_string, "_dTE")
+    jobs[[length(jobs) + 1]] <- list(
+        analysis = "translation",
+        seq_type = "Ribo",
+        left_group = grp_ribo[[1]],
+        right_group = grp_ribo[[2]],
+        out_prefix = paste0(outdir, "dTE/", contrast_id),
+        title = paste0(contrast_id, "    (n = ", n_ribo[[1]], " / ", n_rna[[1]], " / ", n_ribo[[2]], " / ", n_rna[[2]], ")")
+    )
+  }
+
+  return(jobs)
+}
+
+collect_anota2seq_jobs <- function(meta, dge_meta, contrast_col, combs, uniqs, outdir, skip_pairwise, skip_one_vs_all, log_file) {
+  jobs <- list()
+
+  if (!skip_pairwise) {
+    for (tup in combs) {
+      args <- build_combination_contrast_args(meta, tup, contrast_col)
+      jobs <- c(jobs, collect_anota2seq_jobs_from_args(args, outdir))
+    }
+  }
+
+  if (!skip_one_vs_all) {
+    has_ribo_data <- any(dge_meta$seq_type == "Ribo")
+    for (val in uniqs) {
+      is_subset <- sum(startsWith(as.character(dge_meta[[contrast_col]]), val)) < nrow(dge_meta)
+      if (is_subset) {
+        args <- build_one_vs_all_contrast_args(dge_meta, val, contrast_col, has_ribo_data)
+        jobs <- c(jobs, collect_anota2seq_jobs_from_args(args, outdir))
+      }
+    }
+  }
+
+  cat(sprintf("Collected %d anota2seq contrast outputs for batched evaluation.\n", length(jobs)), file=log_file, append=TRUE)
+  return(jobs)
 }
 
 
@@ -641,7 +765,7 @@ parse_anota2seq_group_weights <- function(group_string, seq_type) {
     return(weights)
 }
 
-make_anota2seq_contrast_matrix <- function(left_group, right_group, seq_type, pheno_levels) {
+make_anota2seq_base_contrast <- function(left_group, right_group, seq_type, pheno_levels) {
     left_weights <- parse_anota2seq_group_weights(left_group, seq_type)
     right_weights <- parse_anota2seq_group_weights(right_group, seq_type)
 
@@ -655,6 +779,10 @@ make_anota2seq_contrast_matrix <- function(left_group, right_group, seq_type, ph
     colnames(contrast) <- "contrast1"
     contrast[names(left_weights), 1] <- left_weights
     contrast[names(right_weights), 1] <- contrast[names(right_weights), 1] - right_weights
+    return(contrast)
+}
+
+fill_anota2seq_contrast_matrix <- function(contrast, pheno_levels) {
     needed_cols <- length(pheno_levels) - 1
     if (needed_cols > 1) {
         current <- contrast
@@ -677,6 +805,15 @@ make_anota2seq_contrast_matrix <- function(left_group, right_group, seq_type, ph
         colnames(contrast) <- c("contrast1", paste0("filler", seq_len(ncol(contrast) - 1)))
     }
     return(contrast)
+}
+
+make_anota2seq_contrast_matrix <- function(left_group, right_group, seq_type, pheno_levels) {
+    contrast <- make_anota2seq_base_contrast(left_group, right_group, seq_type, pheno_levels)
+    return(fill_anota2seq_contrast_matrix(contrast, pheno_levels))
+}
+
+anota2seq_contrast_key <- function(analysis, contrast) {
+    paste(analysis, paste(rownames(contrast), signif(as.numeric(contrast[,1]), 12), sep="=", collapse=";"), sep="|")
 }
 
 finalize_contrast_result <- function(res, out_prefix, title, remap_to_transcript = FALSE) {
@@ -813,23 +950,167 @@ finalize_contrast_result <- function(res, out_prefix, title, remap_to_transcript
     gfig(plot, paste0(out_prefix, "_Volcano"), 30,30)
 }
 
+get_edgeR_contrast_cache <- function() {
+    if (!exists("edgeR_contrast_cache", envir=.GlobalEnv, inherits=FALSE)) {
+        edgeR_contrast_cache <<- new.env(parent=emptyenv())
+    }
+    edgeR_contrast_cache
+}
+
+make_edgeR_contrast_key <- function(fit, contrast_matrix) {
+    contrast_matrix <- as.matrix(contrast_matrix)
+    contrast_vals <- signif(as.numeric(contrast_matrix[,1]), 12)
+    contrast_names <- rownames(contrast_matrix)
+    if (is.null(contrast_names)) contrast_names <- names(contrast_vals)
+    fit_cols <- colnames(fit$coefficients)
+    if (is.null(fit_cols) && !is.null(fit$design)) fit_cols <- colnames(fit$design)
+
+    paste(
+        paste(dim(fit$coefficients), collapse="x"),
+        paste(fit_cols, collapse=";"),
+        paste(contrast_names, contrast_vals, sep="=", collapse=";"),
+        sep="|"
+    )
+}
+
+set_edgeR_contrast_cache_result <- function(cache, cache_key, res, max_entries = 64) {
+    cache_keys <- attr(cache, "keys")
+    if (is.null(cache_keys)) cache_keys <- character(0)
+
+    if (!cache_key %in% cache_keys) {
+        while (length(cache_keys) >= max_entries) {
+            rm(list=cache_keys[[1]], envir=cache)
+            cache_keys <- cache_keys[-1]
+        }
+        cache_keys <- c(cache_keys, cache_key)
+    }
+
+    assign(cache_key, res, envir=cache)
+    attr(cache, "keys") <- cache_keys
+}
+
 
 eval_contrast <- function(fit, contrast, out_prefix, title, log_file, remap_to_transcript = FALSE) {
     cleaned_contrast <- sub("^makeContrasts\\(", "", sub(", levels=.*\\)$", "", contrast))
     cat("Evaluating contrast ", title, " : ", cleaned_contrast, "\n", file = log_file, append = TRUE)
 
-    # 1. Evaluate
-    lrt <- glmQLFTest(fit, contrast=eval(parse(text = contrast)))
-    res <- topTags(lrt, n=Inf)$table
+    contrast_matrix <- eval(parse(text = contrast))
+    cache <- get_edgeR_contrast_cache()
+    cache_key <- make_edgeR_contrast_key(fit, contrast_matrix)
+
+    if (exists(cache_key, envir=cache, inherits=FALSE)) {
+        res <- get(cache_key, envir=cache, inherits=FALSE)
+    } else {
+        qlf <- glmQLFTest(fit, contrast=contrast_matrix)
+        res <- topTags(qlf, n=Inf, sort.by="none")$table
+        set_edgeR_contrast_cache_result(cache, cache_key, res)
+    }
+
     res <- res |> tibble::rownames_to_column('row_id')
     finalize_contrast_result(res, out_prefix, title, remap_to_transcript)
+}
+
+prepare_anota2seq_contrast_cache <- function(ads, jobs, log_file) {
+    anota2seq_contrast_cache <<- list(results=list())
+    if (length(jobs) == 0) return(invisible(NULL))
+
+    covariates <- anota2seq::anota2seqGetCovariates(ads)
+    pheno_levels <- levels(factor(covariates$phenoVec))
+    group_counts <- table(covariates$phenoVec)
+    needed_cols <- length(pheno_levels) - 1
+    valid_jobs <- list()
+    seen_keys <- c()
+
+    for (job in jobs) {
+        contrast <- tryCatch(
+            make_anota2seq_base_contrast(job$left_group, job$right_group, job$seq_type, pheno_levels),
+            error = function(e) {
+                cat("Skipping anota2seq contrast ", job$title, " (", conditionMessage(e), ")\n", file = log_file, append = TRUE)
+                return(NULL)
+            }
+        )
+        if (is.null(contrast)) next
+
+        active_groups <- rownames(contrast)[contrast[,1] != 0]
+        if (any(group_counts[active_groups] < 2)) {
+            cat("Skipping anota2seq contrast ", job$title, " (insufficient paired samples)\n", file = log_file, append = TRUE)
+            next
+        }
+
+        job$contrast <- contrast
+        job$key <- anota2seq_contrast_key(job$analysis, contrast)
+        if (job$key %in% seen_keys) next
+        seen_keys <- c(seen_keys, job$key)
+        valid_jobs[[length(valid_jobs) + 1]] <- job
+    }
+
+    if (length(valid_jobs) == 0) return(invisible(NULL))
+
+    for (analysis_name in unique(vapply(valid_jobs, function(x) x$analysis, character(1)))) {
+        analysis_jobs <- valid_jobs[vapply(valid_jobs, function(x) x$analysis == analysis_name, logical(1))]
+        batches <- list()
+        current_jobs <- list()
+        current_matrix <- NULL
+
+        flush_batch <- function() {
+            if (length(current_jobs) == 0) return(NULL)
+            list(jobs=current_jobs, matrix=fill_anota2seq_contrast_matrix(current_matrix, pheno_levels))
+        }
+
+        for (job in analysis_jobs) {
+            if (!is.null(anota2seq_contrast_cache$results[[job$key]])) next
+            if (is.null(current_matrix)) {
+                current_jobs <- list(job)
+                current_matrix <- job$contrast
+                next
+            }
+
+            trial <- cbind(current_matrix, job$contrast)
+            if (ncol(current_matrix) < needed_cols && qr(trial)$rank > qr(current_matrix)$rank) {
+                current_jobs[[length(current_jobs) + 1]] <- job
+                current_matrix <- trial
+            } else {
+                batches[[length(batches) + 1]] <- flush_batch()
+                current_jobs <- list(job)
+                current_matrix <- job$contrast
+            }
+        }
+        batches[[length(batches) + 1]] <- flush_batch()
+        batches <- batches[!vapply(batches, is.null, logical(1))]
+
+        cat(sprintf("Running %d batched anota2seq %s jobs for %d requested outputs.\n", length(batches), analysis_name, length(analysis_jobs)), file=log_file, append=TRUE)
+        for (batch in batches) {
+            cat("Evaluating batched anota2seq ", analysis_name, " contrasts: ", paste(vapply(batch$jobs, function(x) x$title, character(1)), collapse=" | "), "\n", file=log_file, append=TRUE)
+            ads_res <- anota2seq::anota2seqAnalyze(
+                Anota2seqDataSet = ads,
+                contrasts = batch$matrix,
+                analysis = analysis_name,
+                useProgBar = FALSE,
+                fileStem = tempfile("anota2seq_", tmpdir=tempdir())
+            )
+
+            for (i in seq_along(batch$jobs)) {
+                res <- as.data.frame(anota2seq::anota2seqGetOutput(
+                    object = ads_res,
+                    analysis = analysis_name,
+                    output = "full",
+                    selContrast = i,
+                    getRVM = TRUE
+                ))
+                cache <- anota2seq_contrast_cache
+                cache$results[[batch$jobs[[i]]$key]] <- res
+                anota2seq_contrast_cache <<- cache
+            }
+        }
+    }
+    invisible(NULL)
 }
 
 eval_anota2seq_contrast <- function(ads, left_group, right_group, seq_type, analysis, out_prefix, title, log_file) {
     covariates <- anota2seq::anota2seqGetCovariates(ads)
     pheno_levels <- levels(factor(covariates$phenoVec))
     contrast <- tryCatch(
-        make_anota2seq_contrast_matrix(left_group, right_group, seq_type, pheno_levels),
+        make_anota2seq_base_contrast(left_group, right_group, seq_type, pheno_levels),
         error = function(e) {
             cat("Skipping anota2seq contrast ", title, " (", conditionMessage(e), ")\n", file = log_file, append = TRUE)
             return(NULL)
@@ -844,22 +1125,27 @@ eval_anota2seq_contrast <- function(ads, left_group, right_group, seq_type, anal
         return(NULL)
     }
 
-    cat("Evaluating anota2seq ", analysis, " contrast ", title, "\n", file = log_file, append = TRUE)
-    ads_res <- anota2seq::anota2seqAnalyze(
-        Anota2seqDataSet = ads,
-        contrasts = contrast,
-        analysis = analysis,
-        useProgBar = FALSE,
-        fileStem = tempfile("anota2seq_", tmpdir=tempdir())
-    )
+    key <- anota2seq_contrast_key(analysis, contrast)
+    if (exists("anota2seq_contrast_cache") && !is.null(anota2seq_contrast_cache$results[[key]])) {
+        res <- as.data.frame(anota2seq_contrast_cache$results[[key]])
+    } else {
+        cat("Evaluating anota2seq ", analysis, " contrast ", title, "\n", file = log_file, append = TRUE)
+        ads_res <- anota2seq::anota2seqAnalyze(
+            Anota2seqDataSet = ads,
+            contrasts = fill_anota2seq_contrast_matrix(contrast, pheno_levels),
+            analysis = analysis,
+            useProgBar = FALSE,
+            fileStem = tempfile("anota2seq_", tmpdir=tempdir())
+        )
 
-    res <- as.data.frame(anota2seq::anota2seqGetOutput(
-        object = ads_res,
-        analysis = analysis,
-        output = "full",
-        selContrast = 1,
-        getRVM = TRUE
-    ))
+        res <- as.data.frame(anota2seq::anota2seqGetOutput(
+            object = ads_res,
+            analysis = analysis,
+            output = "full",
+            selContrast = 1,
+            getRVM = TRUE
+        ))
+    }
     res <- res |> tibble::rownames_to_column('row_id')
     res$logFC <- res$apvEff
     logcpm <- if (exists("anota2seq_logcpm") && analysis %in% names(anota2seq_logcpm)) anota2seq_logcpm[[analysis]] else NULL
@@ -1693,7 +1979,7 @@ design <- design[, colSums(design != 0) > 0, drop=FALSE]
 
 keep <- filterByExpr(dge, design)
 dge <- dge[keep, , keep.lib.sizes = FALSE]
-dge <- calcNormFactors(dge, method="TMM")
+dge <- calc_assay_norm_factors(dge, assay_col="seq_type", method="TMM", log_file=log_file)
 
 # --- SAVE NORMALIZED MATRICES ---
 cat("Saving normalized LogCPM matrices...\n", file=log_file, append=TRUE)
@@ -1890,7 +2176,7 @@ if (isTRUE(opt$use_anota2)) {
     design.rna <- NULL
     fit_anota2seq <- build_anota2seq_dataset(dge, log_file)
 } else {
-    cat("Valid contrasts found. Fitting GLM models...\n", file=log_file, append=TRUE)
+    cat("Valid contrasts found. Fitting edgeR quasi-likelihood GLM models...\n", file=log_file, append=TRUE)
     dge <- estimateDisp(dge, design, min.row.sum=30)
     fit_paired <- glmQLFit(dge, design)
 
@@ -1915,6 +2201,7 @@ if (isTRUE(opt$use_anota2)) {
         rna_col_ids <- rownames(meta.rna)
         dge_rna <- DGEList(counts=rna_mat_for_fit[, rna_col_ids, drop=FALSE], samples=data.frame(meta.rna))
         design.rna <- model.matrix(as.formula(f_rna), data=data.frame(meta.rna))
+        dge_rna <- calcNormFactors(dge_rna, method="TMM")
         dge_rna <- estimateDisp(dge_rna, design.rna)
         fit_rna <- glmQLFit(dge_rna, design.rna)
     }
@@ -1944,6 +2231,21 @@ if (!is.null(opt$save_model)) {
 # Resume Execution
 dge_idxs <- match(rownames(dge$samples), meta.samples$counts_col)
 dge.meta <- meta.samples[dge_idxs,]
+
+if (isTRUE(opt$use_anota2)) {
+    anota2seq_jobs <- collect_anota2seq_jobs(
+        dge$samples,
+        dge.meta,
+        contrast_col,
+        comb_dict[[contrast_col]],
+        uniq_dict[[contrast_col]],
+        opt$outdir,
+        opt$skip_pairwise,
+        opt$skip_one_vs_all,
+        log_file
+    )
+    prepare_anota2seq_contrast_cache(fit_anota2seq, anota2seq_jobs, log_file)
+}
 
 # -----------------------------------------------------------------------------
 # 6. EXECUTE CONTRASTS
