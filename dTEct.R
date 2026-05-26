@@ -17,6 +17,23 @@ suppressPackageStartupMessages({
 })
 options(show.error.locations = TRUE)
 
+make_bpparam <- function(workers) {
+  workers <- max(1L, as.integer(workers))
+  BiocParallel::MulticoreParam(
+    workers = workers,
+    progressbar = FALSE,
+    stop.on.error = TRUE,
+    tasks = 0L
+  )
+}
+
+run_bplapply <- function(X, FUN, workers, ...) {
+  if (length(X) == 0) return(list())
+  bpworkers <- min(max(1L, as.integer(workers)), length(X))
+  BiocParallel::bplapply(X, FUN, ..., BPPARAM = make_bpparam(bpworkers))
+}
+
+
 validate_inputs <- function(opt) {
   cat("Validating inputs...\n")
   errors <- c()
@@ -739,7 +756,9 @@ construct_contrast_string <- function(contrast_vals , seq_type, meta, weight_dic
       val_grps[j] <- paste0(unlist(split_val)[1:j], collapse = ".")
     }
     key <- contrast_vals[[i]]
-    # FIX IS HERE: Changed collapse="__" to collapse="_and_"
+    # Group names must match the design/model column naming used elsewhere in
+    # the script. Multi-level metadata groups are joined with _and_ before the
+    # seq_type suffix, e.g. groupMBL_and_MBL.SHH__RNA.
     grp_strings[i] <- paste0(weight_dict[[key]], "*group", paste0(val_grps, collapse = "_and_"), "__", seq_type)
   }
   grp_string <- paste0(grp_strings, collapse=" + ")
@@ -747,6 +766,10 @@ construct_contrast_string <- function(contrast_vals , seq_type, meta, weight_dic
 }
 
 parse_anota2seq_group_weights <- function(group_string, seq_type) {
+    # edgeR contrasts are represented as strings such as:
+    #   (0.5*groupA__RNA + 0.5*groupB__RNA)
+    # anota2seq needs a numeric matrix indexed by phenotype, so this parser
+    # extracts the group names and their weights from those existing strings.
     pattern <- paste0("([0-9eE.+-]+)\\*group([^ +()]+)__", seq_type)
     matches <- gregexpr(pattern, group_string, perl=TRUE)
     tokens <- regmatches(group_string, matches)[[1]]
@@ -765,13 +788,62 @@ parse_anota2seq_group_weights <- function(group_string, seq_type) {
     return(weights)
 }
 
+normalize_anota2seq_weights <- function(weights, pheno_levels) {
+    # anota2seq is built from paired RNA/Ribo samples only. During that setup we
+    # may drop phenotype classes that do not have enough paired samples, but the
+    # contrast strings were generated earlier from the full metadata table.
+    #
+    # This matters most for one-vs-all contrasts: the "OTHER" side can contain
+    # many sparse/unpaired classes. Those classes are not present in the paired
+    # anota2seq object, so they must be removed from the contrast. After removal,
+    # the remaining side is renormalized to sum to 1 so the estimand remains:
+    #   average(retained target classes) - average(retained comparison classes)
+    weights <- weights[names(weights) %in% pheno_levels]
+    if (length(weights) == 0) return(weights)
+
+    weight_sum <- sum(weights)
+    if (weight_sum == 0) return(weights)
+    weights / weight_sum
+}
+
+force_anota2seq_zero_sum <- function(contrast) {
+    # anota2seq requires every contrast column to sum to exactly zero, not just
+    # numerically close to zero. Weighted one-vs-all contrasts often produce tiny
+    # floating-point residuals such as 1e-17 after renormalization. Those are
+    # mathematically zero, but anota2seq rejects them during input validation.
+    #
+    # Try adjusting the largest coefficients first, then fall back to all rows,
+    # and keep only an adjustment that makes R's own colSums() exactly zero.
+    # The correction is at machine precision and does not change the contrast in
+    # any meaningful statistical sense.
+    for (j in seq_len(ncol(contrast))) {
+        col_sum <- colSums(contrast[,j,drop=FALSE])[[1]]
+        if (col_sum == 0) next
+
+        candidates <- unique(c(order(abs(contrast[,j]), decreasing=TRUE), seq_len(nrow(contrast))))
+        for (idx in candidates) {
+            adjusted <- contrast
+            adjusted[idx,j] <- adjusted[idx,j] - colSums(adjusted[,j,drop=FALSE])[[1]]
+            if (colSums(adjusted[,j,drop=FALSE])[[1]] == 0) {
+                contrast <- adjusted
+                break
+            }
+        }
+    }
+    contrast
+}
+
 make_anota2seq_base_contrast <- function(left_group, right_group, seq_type, pheno_levels) {
     left_weights <- parse_anota2seq_group_weights(left_group, seq_type)
     right_weights <- parse_anota2seq_group_weights(right_group, seq_type)
 
-    missing_groups <- setdiff(unique(c(names(left_weights), names(right_weights))), pheno_levels)
-    if (length(missing_groups) > 0) {
-        stop(paste0("anota2seq contrast contains groups absent from paired samples: ", paste(missing_groups, collapse=", ")))
+    # Project the metadata-derived contrast onto the phenotype classes that are
+    # actually present in the paired anota2seq dataset. If either side disappears
+    # completely, the contrast is not estimable and should be skipped.
+    left_weights <- normalize_anota2seq_weights(left_weights, pheno_levels)
+    right_weights <- normalize_anota2seq_weights(right_weights, pheno_levels)
+    if (length(left_weights) == 0 || length(right_weights) == 0) {
+        stop("anota2seq contrast has no paired samples for one side after filtering")
     }
 
     contrast <- matrix(0, nrow=length(pheno_levels), ncol=1)
@@ -779,10 +851,13 @@ make_anota2seq_base_contrast <- function(left_group, right_group, seq_type, phen
     colnames(contrast) <- "contrast1"
     contrast[names(left_weights), 1] <- left_weights
     contrast[names(right_weights), 1] <- contrast[names(right_weights), 1] - right_weights
-    return(contrast)
+    return(force_anota2seq_zero_sum(contrast))
 }
 
 fill_anota2seq_contrast_matrix <- function(contrast, pheno_levels) {
+    # anota2seq expects a full-rank contrast matrix with n_phenotypes - 1 columns.
+    # We only report contrast1; filler columns are added solely to satisfy the
+    # package's model-fitting requirements.
     needed_cols <- length(pheno_levels) - 1
     if (needed_cols > 1) {
         current <- contrast
@@ -804,7 +879,7 @@ fill_anota2seq_contrast_matrix <- function(contrast, pheno_levels) {
         contrast <- current
         colnames(contrast) <- c("contrast1", paste0("filler", seq_len(ncol(contrast) - 1)))
     }
-    return(contrast)
+    return(force_anota2seq_zero_sum(contrast))
 }
 
 make_anota2seq_contrast_matrix <- function(left_group, right_group, seq_type, pheno_levels) {
@@ -1081,6 +1156,7 @@ prepare_anota2seq_contrast_cache <- function(ads, jobs, log_file) {
         cat(sprintf("Running %d batched anota2seq %s jobs for %d requested outputs.\n", length(batches), analysis_name, length(analysis_jobs)), file=log_file, append=TRUE)
         for (batch in batches) {
             cat("Evaluating batched anota2seq ", analysis_name, " contrasts: ", paste(vapply(batch$jobs, function(x) x$title, character(1)), collapse=" | "), "\n", file=log_file, append=TRUE)
+            cat("  Note: only contrast1 is the requested contrast; additional filler columns are included only to satisfy anota2seq full-rank requirements.\n", file=log_file, append=TRUE)
             ads_res <- anota2seq::anota2seqAnalyze(
                 Anota2seqDataSet = ads,
                 contrasts = batch$matrix,
@@ -1353,8 +1429,10 @@ if (isTRUE(opt$use_anota2) && !requireNamespace("anota2seq", quietly=TRUE)) {
 # opt$cores <- 4
 # opt$no_batch_factor <- TRUE
 
-# Multi-core processing
-register(MulticoreParam(opt$cores))
+# Configure a bounded BiocParallel backend once up front. We still pass an
+# explicit BPPARAM at each parallel call so the effective worker count can be
+# capped to the number of outstanding jobs.
+register(make_bpparam(opt$cores))
 # Parsing multi-group contrasts
 contrast_grps <- parse_groups(opt$contrast_cols)
 contrast_col <- paste0(contrast_grps, collapse="__")
@@ -1381,7 +1459,7 @@ if (!is.null(opt$load_model)) {
   opt$save_model <- NULL
   
   # Re-register cores
-  register(MulticoreParam(opt$cores))
+  register(make_bpparam(opt$cores))
   
   # Re-open log file since we just overwrote it or it might be closed
   log_file <- paste0(opt$outdir, "run_info.txt")
@@ -2254,9 +2332,9 @@ cat("Executing contrasts...\n", file=log_file, append=TRUE)
 
 # Execute Unique Contrasts (TE mostly, uses Paired Fit)
 if (!isTRUE(opt$use_anota2)) {
-    bplapply(uniq_dict[[contrast_col]], function(val) {
+    run_bplapply(uniq_dict[[contrast_col]], function(val) {
         evaluate_unique_contrast(dge$samples, val, contrast_col, fit_paired, opt$outdir, log_file)
-    })
+    }, workers = opt$cores)
 } else {
     cat("Skipping TE contrasts in anota2seq mode.\n", file=log_file, append=TRUE)
 }
@@ -2264,9 +2342,9 @@ if (!isTRUE(opt$use_anota2)) {
 # Execute Combination Contrasts (DE & dTE, uses Paired + RNA Independent Fit)
 # Execute Combination Contrasts (DE & dTE, uses Paired + RNA Independent Fit)
 if (!opt$skip_pairwise) {
-    bplapply(comb_dict[[contrast_col]], function(val) {
+    run_bplapply(comb_dict[[contrast_col]], function(val) {
         evaluate_combination_contrast(dge$samples, val, contrast_col, fit_paired, fit_rna, opt$outdir, log_file)
-    })
+    }, workers = opt$cores)
 } else {
     cat("Skipping pairwise contrasts (--skip_pairwise is TRUE).\n", file=log_file, append=TRUE)
 }
@@ -2279,7 +2357,7 @@ if (!opt$skip_one_vs_all) {
     
     # We iterate over every valid unique group found
     # (These have already been filtered for replicates in Step 6)
-    bplapply(uniq_dict[[contrast_col]], function(val) {
+    run_bplapply(uniq_dict[[contrast_col]], function(val) {
         # Check if we should run OvA for this group
         # (It must define a subset, i.e., not encompass the entire dataset)
         is_subset <- sum(startsWith(as.character(dge.meta[[contrast_col]]), val)) < nrow(dge.meta)
@@ -2296,7 +2374,7 @@ if (!opt$skip_one_vs_all) {
                 log_file = log_file
             )
         }
-    })
+    }, workers = opt$cores)
 }
 
 cat("Analysis complete.\n", file=log_file, append=TRUE)
