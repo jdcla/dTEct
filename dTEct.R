@@ -17,13 +17,32 @@ suppressPackageStartupMessages({
 })
 options(show.error.locations = TRUE)
 
+set_thread_guards <- function(per_process_threads = 1L) {
+  per_process_threads <- max(1L, as.integer(per_process_threads))
+  thread_vars <- c(
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "RCPP_PARALLEL_NUM_THREADS"
+  )
+
+  for (var in thread_vars) {
+    do.call(Sys.setenv, as.list(stats::setNames(as.character(per_process_threads), var)))
+  }
+
+  invisible(thread_vars)
+}
+
 make_bpparam <- function(workers) {
   workers <- max(1L, as.integer(workers))
   BiocParallel::MulticoreParam(
     workers = workers,
     progressbar = FALSE,
     stop.on.error = TRUE,
-    tasks = 0L
+    tasks = workers
   )
 }
 
@@ -856,9 +875,10 @@ make_anota2seq_base_contrast <- function(left_group, right_group, seq_type, phen
 
 fill_anota2seq_contrast_matrix <- function(contrast, pheno_levels) {
     # anota2seq expects a full-rank contrast matrix with n_phenotypes - 1 columns.
-    # We only report contrast1; filler columns are added solely to satisfy the
-    # package's model-fitting requirements.
+    # Requested contrasts are placed first; filler columns are added solely to
+    # satisfy the package's model-fitting requirements.
     needed_cols <- length(pheno_levels) - 1
+    requested_cols <- ncol(contrast)
     if (needed_cols > 1) {
         current <- contrast
         group_pairs <- combn(pheno_levels, 2, simplify=FALSE)
@@ -877,7 +897,8 @@ fill_anota2seq_contrast_matrix <- function(contrast, pheno_levels) {
             stop("could not construct full-rank anota2seq contrast matrix")
         }
         contrast <- current
-        colnames(contrast) <- c("contrast1", paste0("filler", seq_len(ncol(contrast) - 1)))
+        n_filler <- ncol(contrast) - requested_cols
+        colnames(contrast) <- c(paste0("contrast", seq_len(requested_cols)), paste0("filler", seq_len(n_filler)))
     }
     return(force_anota2seq_zero_sum(contrast))
 }
@@ -889,6 +910,96 @@ make_anota2seq_contrast_matrix <- function(left_group, right_group, seq_type, ph
 
 anota2seq_contrast_key <- function(analysis, contrast) {
     paste(analysis, paste(rownames(contrast), signif(as.numeric(contrast[,1]), 12), sep="=", collapse=";"), sep="|")
+}
+
+format_elapsed <- function(start_time) {
+    elapsed <- as.numeric(difftime(Sys.time(), start_time, units="secs"))
+    sprintf("%.1f min", elapsed / 60)
+}
+
+safe_file_label <- function(x) {
+    gsub("[^A-Za-z0-9_.-]+", "_", x)
+}
+
+write_anota2seq_contrast_matrix <- function(contrast_matrix, file_path) {
+    out <- data.frame(phenotype = rownames(contrast_matrix), contrast_matrix, check.names = FALSE)
+    write.csv(out, file_path, row.names=FALSE)
+}
+
+write_anota2seq_batch_contrasts <- function(batch, analysis_name, batch_index, contrast_dir, log_file) {
+    if (is.null(contrast_dir) || contrast_dir == "") return(invisible(NULL))
+
+    dir.create(contrast_dir, recursive=TRUE, showWarnings=FALSE)
+    analysis_label <- safe_file_label(analysis_name)
+    batch_prefix <- file.path(contrast_dir, sprintf("%s_batch_%03d", analysis_label, batch_index))
+
+    full_matrix_path <- paste0(batch_prefix, "_full_matrix.csv")
+    write_anota2seq_contrast_matrix(batch$matrix, full_matrix_path)
+
+    metadata <- data.frame(
+        batch = batch_index,
+        analysis = analysis_name,
+        requested_contrast = seq_along(batch$jobs),
+        title = vapply(batch$jobs, function(x) x$title, character(1)),
+        out_prefix = vapply(batch$jobs, function(x) x$out_prefix, character(1)),
+        key = vapply(batch$jobs, function(x) x$key, character(1)),
+        stringsAsFactors = FALSE
+    )
+    write.csv(metadata, paste0(batch_prefix, "_metadata.csv"), row.names=FALSE)
+
+    for (i in seq_along(batch$jobs)) {
+        requested_path <- paste0(batch_prefix, sprintf("_requested_%03d.csv", i))
+        write_anota2seq_contrast_matrix(batch$jobs[[i]]$contrast, requested_path)
+    }
+
+    cat(sprintf("Saved anota2seq contrast matrices for %s batch %d to %s\n", analysis_name, batch_index, contrast_dir), file=log_file, append=TRUE)
+    invisible(NULL)
+}
+
+evaluate_anota2seq_batch <- function(ads, batch, analysis_name, batch_index, total_batches, log_file) {
+    start_time <- Sys.time()
+    cat(sprintf(
+        "Starting anota2seq %s batch %d/%d: %d requested outputs; contrast matrix %d x %d.\n",
+        analysis_name, batch_index, total_batches, length(batch$jobs), nrow(batch$matrix), ncol(batch$matrix)
+    ), file=log_file, append=TRUE)
+    cat("  Note: only requested contrast columns are reported; filler columns are included only to satisfy anota2seq full-rank requirements.\n", file=log_file, append=TRUE)
+
+    suppressMessages(suppressWarnings(capture.output({
+        ads_res <- anota2seq::anota2seqAnalyze(
+            Anota2seqDataSet = ads,
+            contrasts = batch$matrix,
+            analysis = analysis_name,
+            useProgBar = FALSE,
+            fileStem = tempfile("anota2seq_", tmpdir=tempdir())
+        )
+    }, file = NULL)))
+
+    cat(sprintf(
+        "Finished anota2seqAnalyze for %s batch %d/%d in %s; extracting %d outputs.\n",
+        analysis_name, batch_index, total_batches, format_elapsed(start_time), length(batch$jobs)
+    ), file=log_file, append=TRUE)
+
+    results <- list()
+    for (i in seq_along(batch$jobs)) {
+        res <- as.data.frame(anota2seq::anota2seqGetOutput(
+            object = ads_res,
+            analysis = analysis_name,
+            output = "full",
+            selContrast = i,
+            getRVM = TRUE
+        ))
+        results[[batch$jobs[[i]]$key]] <- res
+        cat(sprintf(
+            "  Extracted anota2seq %s batch %d/%d output %d/%d: %s\n",
+            analysis_name, batch_index, total_batches, i, length(batch$jobs), batch$jobs[[i]]$title
+        ), file=log_file, append=TRUE)
+    }
+
+    cat(sprintf(
+        "Completed anota2seq %s batch %d/%d in %s.\n",
+        analysis_name, batch_index, total_batches, format_elapsed(start_time)
+    ), file=log_file, append=TRUE)
+    results
 }
 
 finalize_contrast_result <- function(res, out_prefix, title, remap_to_transcript = FALSE) {
@@ -1121,6 +1232,17 @@ prepare_anota2seq_contrast_cache <- function(ads, jobs, log_file) {
 
     if (length(valid_jobs) == 0) return(invisible(NULL))
 
+    contrast_dir <- NULL
+    if (exists("opt", envir=.GlobalEnv, inherits=FALSE) && !is.null(opt$outdir)) {
+        contrast_dir <- file.path(opt$outdir, "anota2seq_contrasts")
+    }
+    workers <- 1L
+    if (exists("opt", envir=.GlobalEnv, inherits=FALSE) && !is.null(opt$cores)) {
+        workers <- max(1L, as.integer(opt$cores))
+    }
+
+    cat(sprintf("Prepared %d valid anota2seq contrast outputs for evaluation.\n", length(valid_jobs)), file=log_file, append=TRUE)
+
     for (analysis_name in unique(vapply(valid_jobs, function(x) x$analysis, character(1)))) {
         analysis_jobs <- valid_jobs[vapply(valid_jobs, function(x) x$analysis == analysis_name, logical(1))]
         batches <- list()
@@ -1153,31 +1275,37 @@ prepare_anota2seq_contrast_cache <- function(ads, jobs, log_file) {
         batches[[length(batches) + 1]] <- flush_batch()
         batches <- batches[!vapply(batches, is.null, logical(1))]
 
-        cat(sprintf("Running %d batched anota2seq %s jobs for %d requested outputs.\n", length(batches), analysis_name, length(analysis_jobs)), file=log_file, append=TRUE)
-        for (batch in batches) {
-            cat("Evaluating batched anota2seq ", analysis_name, " contrasts: ", paste(vapply(batch$jobs, function(x) x$title, character(1)), collapse=" | "), "\n", file=log_file, append=TRUE)
-            cat("  Note: only contrast1 is the requested contrast; additional filler columns are included only to satisfy anota2seq full-rank requirements.\n", file=log_file, append=TRUE)
-            ads_res <- anota2seq::anota2seqAnalyze(
-                Anota2seqDataSet = ads,
-                contrasts = batch$matrix,
-                analysis = analysis_name,
-                useProgBar = FALSE,
-                fileStem = tempfile("anota2seq_", tmpdir=tempdir())
-            )
+        cat(sprintf(
+            "Running %d batched anota2seq %s jobs for %d requested outputs with up to %d workers.\n",
+            length(batches), analysis_name, length(analysis_jobs), min(workers, length(batches))
+        ), file=log_file, append=TRUE)
 
-            for (i in seq_along(batch$jobs)) {
-                res <- as.data.frame(anota2seq::anota2seqGetOutput(
-                    object = ads_res,
-                    analysis = analysis_name,
-                    output = "full",
-                    selContrast = i,
-                    getRVM = TRUE
-                ))
+        for (i in seq_along(batches)) {
+            cat(sprintf(
+                "Queued anota2seq %s batch %d/%d: %d requested outputs; contrast matrix %d x %d; outputs: %s\n",
+                analysis_name, i, length(batches), length(batches[[i]]$jobs), nrow(batches[[i]]$matrix), ncol(batches[[i]]$matrix),
+                paste(vapply(batches[[i]]$jobs, function(x) x$title, character(1)), collapse=" | ")
+            ), file=log_file, append=TRUE)
+            write_anota2seq_batch_contrasts(batches[[i]], analysis_name, i, contrast_dir, log_file)
+        }
+
+        batch_results <- run_bplapply(seq_along(batches), function(i) {
+            evaluate_anota2seq_batch(ads, batches[[i]], analysis_name, i, length(batches), log_file)
+        }, workers = workers)
+
+        completed_outputs <- 0L
+        for (batch_result in batch_results) {
+            for (key in names(batch_result)) {
                 cache <- anota2seq_contrast_cache
-                cache$results[[batch$jobs[[i]]$key]] <- res
+                cache$results[[key]] <- batch_result[[key]]
                 anota2seq_contrast_cache <<- cache
+                completed_outputs <- completed_outputs + 1L
             }
         }
+        cat(sprintf(
+            "Cached %d/%d anota2seq %s requested outputs.\n",
+            completed_outputs, length(analysis_jobs), analysis_name
+        ), file=log_file, append=TRUE)
     }
     invisible(NULL)
 }
@@ -1206,13 +1334,15 @@ eval_anota2seq_contrast <- function(ads, left_group, right_group, seq_type, anal
         res <- as.data.frame(anota2seq_contrast_cache$results[[key]])
     } else {
         cat("Evaluating anota2seq ", analysis, " contrast ", title, "\n", file = log_file, append = TRUE)
-        ads_res <- anota2seq::anota2seqAnalyze(
-            Anota2seqDataSet = ads,
-            contrasts = fill_anota2seq_contrast_matrix(contrast, pheno_levels),
-            analysis = analysis,
-            useProgBar = FALSE,
-            fileStem = tempfile("anota2seq_", tmpdir=tempdir())
-        )
+        suppressMessages(suppressWarnings(capture.output({
+            ads_res <- anota2seq::anota2seqAnalyze(
+                Anota2seqDataSet = ads,
+                contrasts = fill_anota2seq_contrast_matrix(contrast, pheno_levels),
+                analysis = analysis,
+                useProgBar = FALSE,
+                fileStem = tempfile("anota2seq_", tmpdir=tempdir())
+            )
+        }, file = NULL)))
 
         res <- as.data.frame(anota2seq::anota2seqGetOutput(
             object = ads_res,
@@ -1280,7 +1410,8 @@ build_anota2seq_dataset <- function(dge, log_file) {
         }
     }
 
-    cat(sprintf("Building anota2seq dataset from %d paired samples and %d features.\n", length(shared_ids), nrow(dataP)), file=log_file, append=TRUE)
+    input_features <- nrow(dataP)
+    cat(sprintf("Building anota2seq dataset from %d paired samples and %d input features.\n", length(shared_ids), input_features), file=log_file, append=TRUE)
     ads <- anota2seq::anota2seqDataSetFromMatrix(
         dataP = dataP,
         dataT = dataT,
@@ -1289,11 +1420,16 @@ build_anota2seq_dataset <- function(dge, log_file) {
         dataType = "RNAseq",
         normalize = TRUE,
         transformation = "TMM-log2",
-        filterZeroGenes = FALSE,
+        filterZeroGenes = TRUE,
         varCutOff = NULL
     )
 
     norm_data <- anota2seq::anota2seqGetNormalizedData(ads)
+    retained_features <- nrow(norm_data$dataP)
+    cat(sprintf(
+        "anota2seq retained %d/%d features after zero-count filtering and normalization.\n",
+        retained_features, input_features
+    ), file=log_file, append=TRUE)
     anota2seq_logcpm <<- list(
         "translated mRNA" = rowMeans(norm_data$dataP, na.rm=TRUE),
         "total mRNA" = rowMeans(norm_data$dataT, na.rm=TRUE),
@@ -1320,6 +1456,14 @@ parse_groups <- function(groups) {
 
 convert_NA_to_false <- function(x) {
   replace(x, is.na(x), FALSE)
+}
+
+parse_cli_bool <- function(x, option_name) {
+  if (is.null(x)) return(NULL)
+  value <- tolower(trimws(as.character(x)))
+  if (value %in% c("true", "t", "1", "yes", "y")) return(TRUE)
+  if (value %in% c("false", "f", "0", "no", "n")) return(FALSE)
+  stop(sprintf("Invalid value for %s: %s", option_name, x))
 }
 
 # Function to get valid combinations from a column. Valid combinations include 
@@ -1380,6 +1524,7 @@ option_list <- list(
     make_option(c("-l", "--cores"         ), type="integer"  , default=1                    , metavar="integer", help="Number of cores."                                                                       ),
     make_option(c("-a", "--contrast_cols" ), type="character", default="treatment_id"               , metavar="character", help="Column names from which contrasts are derived; separated by commas."          ),
     make_option(c("-O", "--skip_one_vs_all"), action="store_true", default=FALSE, help="If set, skips One-vs-All contrasts (Group vs Rest). Default is to RUN them."),
+    make_option(c("--one_vs_all"), type="character", default=NULL, metavar="TRUE/FALSE", help="Legacy compatibility flag. TRUE runs One-vs-All, FALSE skips it. Prefer --skip_one_vs_all to disable."),
     make_option(c("-p", "--plot_ids"), action="store_true", default=FALSE, help="Plot Smart IDs instead of replicate numbers in PCA/MDS."),
     make_option(c("-e", "--no_batch_factor"), action="store_true", default=FALSE, help="Don't create factors for batch date. Can be necessary to achieve full rank for some settings"),
     make_option(c("-S", "--save_model"), type="character", default=NULL, metavar="path", help="Path to save the fitted model (RData file). Defaults to 'dTEct_model.RData' in outdir if not specified. Ignored if --load_model is used."),
@@ -1391,6 +1536,17 @@ option_list <- list(
 
 opt_parser <- OptionParser(option_list=option_list)
 opt        <- parse_args(opt_parser)
+
+legacy_one_vs_all <- parse_cli_bool(opt$one_vs_all, "--one_vs_all")
+if (!is.null(legacy_one_vs_all)) {
+  opt$skip_one_vs_all <- !legacy_one_vs_all
+}
+
+# Prevent each worker from spawning its own BLAS/OpenMP thread team. The script
+# uses process-level parallelism via BiocParallel; letting each process also use
+# many math-library threads is what typically drives CPU usage far above the
+# requested --cores value.
+set_thread_guards(1L)
 
 # Validate Inputs (Skip some checks if loading model)
 if (is.null(opt$load_model)) {
@@ -1433,6 +1589,7 @@ if (isTRUE(opt$use_anota2) && !requireNamespace("anota2seq", quietly=TRUE)) {
 # explicit BPPARAM at each parallel call so the effective worker count can be
 # capped to the number of outstanding jobs.
 register(make_bpparam(opt$cores))
+thread_guard_vars <- c("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "BLIS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS", "RCPP_PARALLEL_NUM_THREADS")
 # Parsing multi-group contrasts
 contrast_grps <- parse_groups(opt$contrast_cols)
 contrast_col <- paste0(contrast_grps, collapse="__")
@@ -1447,23 +1604,42 @@ log_file <- paste0(opt$outdir, "run_info.txt")
 
 # --- LOAD MODEL LOGIC ---
 if (!is.null(opt$load_model)) {
-  cat(paste0("Loading model from ", opt$load_model, "...\n"))
-  load(opt$load_model)
-  if (is.null(opt$use_anota2)) opt$use_anota2 <- FALSE
-  # Update internal opt with new run parameters if needed (e.g. outdir change)
-  # We generally want to keep the fitted objects but maybe change output location
-  # For now, we assume the user provides consistent args or we rely on the loaded environment
-  # EXCEPT for outdir and cores which might change
-  
-  # Ensure save_model is ignored when loading
+  runtime_opt <- opt
+  cat(paste0("Loading model from ", runtime_opt$load_model, "...\n"))
+  load(runtime_opt$load_model)
+  loaded_use_anota2 <- opt$use_anota2
+  if (is.null(loaded_use_anota2)) loaded_use_anota2 <- FALSE
+
+  # A loaded model may contain the original CLI options used during fitting.
+  # Preserve the runtime options from the current invocation for settings that
+  # users reasonably expect to override on rerun, especially --cores and --outdir.
+  opt$load_model <- runtime_opt$load_model
+  opt$outdir <- runtime_opt$outdir
+  opt$cores <- runtime_opt$cores
+  opt$skip_pairwise <- runtime_opt$skip_pairwise
+  opt$skip_one_vs_all <- runtime_opt$skip_one_vs_all
+  opt$one_vs_all <- runtime_opt$one_vs_all
+  opt$plot_ids <- runtime_opt$plot_ids
   opt$save_model <- NULL
-  
-  # Re-register cores
+  opt$use_anota2 <- loaded_use_anota2
+
+  # Re-register cores using the runtime override, not the saved model value.
   register(make_bpparam(opt$cores))
   
-  # Re-open log file since we just overwrote it or it might be closed
+  # Recreate output subdirectories because load_model skips the normal setup path.
+  dir.create(paste0(opt$outdir, 'dTE'), showWarnings = FALSE, recursive = TRUE)
+  dir.create(paste0(opt$outdir, 'Ribo'), showWarnings = FALSE, recursive = TRUE)
+  dir.create(paste0(opt$outdir, 'RNA'), showWarnings = FALSE, recursive = TRUE)
+  if (!isTRUE(opt$use_anota2)) {
+    dir.create(paste0(opt$outdir, 'TE'), showWarnings = FALSE, recursive = TRUE)
+  }
+
+  # Re-open log file using the current output directory.
   log_file <- paste0(opt$outdir, "run_info.txt")
   cat("Model loaded. Skipping data processing and fitting.\n", file = log_file, append = TRUE)
+  cat(sprintf("Using runtime overrides after model load: outdir=%s, cores=%d\n", opt$outdir, opt$cores), file = log_file, append = TRUE)
+  cat(sprintf("Effective contrast flags after model load: skip_pairwise=%s, skip_one_vs_all=%s, use_anota2=%s\n", opt$skip_pairwise, opt$skip_one_vs_all, opt$use_anota2), file = log_file, append = TRUE)
+  cat(sprintf("BiocParallel workers=%d; thread guards=%s\n", opt$cores, paste(sprintf("%s=%s", thread_guard_vars, Sys.getenv(thread_guard_vars, unset = NA_character_)), collapse=", ")), file = log_file, append = TRUE)
   
 } else {
   # --- NORMAL EXECUTION START ---
@@ -1476,6 +1652,7 @@ if (!is.null(opt$load_model)) {
   
   # Clear existing content of the log file at the start of the script
   file.create(log_file) 
+  cat(sprintf("BiocParallel workers=%d; thread guards=%s\n", opt$cores, paste(sprintf("%s=%s", thread_guard_vars, Sys.getenv(thread_guard_vars, unset = NA_character_)), collapse=", ")), file = log_file, append = TRUE)
   
   meta.table <- read_csv(
   opt$metadata,
