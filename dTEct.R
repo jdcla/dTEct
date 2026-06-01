@@ -9,8 +9,6 @@ suppressPackageStartupMessages({
   library(RColorBrewer)
   library(DEFormats)
   library(BiocParallel)
-  library(DEFormats)
-  library(BiocParallel)
   if (requireNamespace("svglite", quietly = TRUE)) {
     library(svglite)
   }
@@ -912,6 +910,11 @@ anota2seq_contrast_key <- function(analysis, contrast) {
     paste(analysis, paste(rownames(contrast), signif(as.numeric(contrast[,1]), 12), sep="=", collapse=";"), sep="|")
 }
 
+# anota2seq is deliberately handled more conservatively than edgeR below. In
+# this container, forked R workers can fail while lazy-loading packages from the
+# shared filesystem (for example cli/sysdata.rdb during plotting). Therefore the
+# anota2seq model calls and final CSV/volcano writing run serially, while results
+# are persisted to disk as soon as each batch completes.
 format_elapsed <- function(start_time) {
     elapsed <- as.numeric(difftime(Sys.time(), start_time, units="secs"))
     sprintf("%.1f min", elapsed / 60)
@@ -953,6 +956,42 @@ write_anota2seq_batch_contrasts <- function(batch, analysis_name, batch_index, c
     }
 
     cat(sprintf("Saved anota2seq contrast matrices for %s batch %d to %s\n", analysis_name, batch_index, contrast_dir), file=log_file, append=TRUE)
+    invisible(NULL)
+}
+
+anota2seq_cache_key_file <- function(cache_dir, key) {
+    file.path(cache_dir, paste0(digest::digest(key, algo="xxhash64"), ".rds"))
+}
+
+set_anota2seq_cache_result <- function(key, result) {
+    cache <- anota2seq_contrast_cache
+    cache$results[[key]] <- result
+    anota2seq_contrast_cache <<- cache
+    invisible(NULL)
+}
+
+load_anota2seq_disk_cache <- function(cache_dir, valid_jobs, log_file) {
+    if (is.null(cache_dir) || cache_dir == "") return(0L)
+    if (!dir.exists(cache_dir)) return(0L)
+
+    loaded <- 0L
+    for (job in valid_jobs) {
+        cache_file <- anota2seq_cache_key_file(cache_dir, job$key)
+        if (!file.exists(cache_file)) next
+        set_anota2seq_cache_result(job$key, readRDS(cache_file))
+        loaded <- loaded + 1L
+    }
+
+    if (loaded > 0) {
+        cat(sprintf("Loaded %d anota2seq contrast results from disk cache %s.\n", loaded, cache_dir), file=log_file, append=TRUE)
+    }
+    loaded
+}
+
+save_anota2seq_disk_cache_result <- function(cache_dir, key, result) {
+    if (is.null(cache_dir) || cache_dir == "") return(invisible(NULL))
+    dir.create(cache_dir, recursive=TRUE, showWarnings=FALSE)
+    saveRDS(result, anota2seq_cache_key_file(cache_dir, key))
     invisible(NULL)
 }
 
@@ -1233,15 +1272,13 @@ prepare_anota2seq_contrast_cache <- function(ads, jobs, log_file) {
     if (length(valid_jobs) == 0) return(invisible(NULL))
 
     contrast_dir <- NULL
+    cache_dir <- NULL
     if (exists("opt", envir=.GlobalEnv, inherits=FALSE) && !is.null(opt$outdir)) {
         contrast_dir <- file.path(opt$outdir, "anota2seq_contrasts")
+        cache_dir <- file.path(opt$outdir, "anota2seq_cache")
     }
-    workers <- 1L
-    if (exists("opt", envir=.GlobalEnv, inherits=FALSE) && !is.null(opt$cores)) {
-        workers <- max(1L, as.integer(opt$cores))
-    }
-
     cat(sprintf("Prepared %d valid anota2seq contrast outputs for evaluation.\n", length(valid_jobs)), file=log_file, append=TRUE)
+    load_anota2seq_disk_cache(cache_dir, valid_jobs, log_file)
 
     for (analysis_name in unique(vapply(valid_jobs, function(x) x$analysis, character(1)))) {
         analysis_jobs <- valid_jobs[vapply(valid_jobs, function(x) x$analysis == analysis_name, logical(1))]
@@ -1274,10 +1311,14 @@ prepare_anota2seq_contrast_cache <- function(ads, jobs, log_file) {
         }
         batches[[length(batches) + 1]] <- flush_batch()
         batches <- batches[!vapply(batches, is.null, logical(1))]
+        if (length(batches) == 0) {
+            cat(sprintf("All %d anota2seq %s requested outputs are already cached.\n", length(analysis_jobs), analysis_name), file=log_file, append=TRUE)
+            next
+        }
 
         cat(sprintf(
-            "Running %d batched anota2seq %s jobs for %d requested outputs with up to %d workers.\n",
-            length(batches), analysis_name, length(analysis_jobs), min(workers, length(batches))
+            "Running %d batched anota2seq %s jobs for %d requested outputs serially.\n",
+            length(batches), analysis_name, length(analysis_jobs)
         ), file=log_file, append=TRUE)
 
         for (i in seq_along(batches)) {
@@ -1289,18 +1330,18 @@ prepare_anota2seq_contrast_cache <- function(ads, jobs, log_file) {
             write_anota2seq_batch_contrasts(batches[[i]], analysis_name, i, contrast_dir, log_file)
         }
 
-        batch_results <- run_bplapply(seq_along(batches), function(i) {
-            evaluate_anota2seq_batch(ads, batches[[i]], analysis_name, i, length(batches), log_file)
-        }, workers = workers)
-
         completed_outputs <- 0L
-        for (batch_result in batch_results) {
+        for (i in seq_along(batches)) {
+            batch_result <- evaluate_anota2seq_batch(ads, batches[[i]], analysis_name, i, length(batches), log_file)
             for (key in names(batch_result)) {
-                cache <- anota2seq_contrast_cache
-                cache$results[[key]] <- batch_result[[key]]
-                anota2seq_contrast_cache <<- cache
+                set_anota2seq_cache_result(key, batch_result[[key]])
+                save_anota2seq_disk_cache_result(cache_dir, key, batch_result[[key]])
                 completed_outputs <- completed_outputs + 1L
             }
+            cat(sprintf(
+                "Persisted anota2seq %s batch %d/%d to memory and disk cache (%d/%d outputs cached for this analysis).\n",
+                analysis_name, i, length(batches), completed_outputs, length(analysis_jobs)
+            ), file=log_file, append=TRUE)
         }
         cat(sprintf(
             "Cached %d/%d anota2seq %s requested outputs.\n",
@@ -2486,6 +2527,10 @@ if (!is.null(opt$save_model)) {
 # Resume Execution
 dge_idxs <- match(rownames(dge$samples), meta.samples$counts_col)
 dge.meta <- meta.samples[dge_idxs,]
+contrast_workers <- if (isTRUE(opt$use_anota2)) 1L else opt$cores
+if (isTRUE(opt$use_anota2)) {
+    cat("Running final anota2seq contrast extraction/writing serially to avoid forked plotting/package lazy-load failures.\n", file=log_file, append=TRUE)
+}
 
 if (isTRUE(opt$use_anota2)) {
     anota2seq_jobs <- collect_anota2seq_jobs(
@@ -2521,7 +2566,7 @@ if (!isTRUE(opt$use_anota2)) {
 if (!opt$skip_pairwise) {
     run_bplapply(comb_dict[[contrast_col]], function(val) {
         evaluate_combination_contrast(dge$samples, val, contrast_col, fit_paired, fit_rna, opt$outdir, log_file)
-    }, workers = opt$cores)
+    }, workers = contrast_workers)
 } else {
     cat("Skipping pairwise contrasts (--skip_pairwise is TRUE).\n", file=log_file, append=TRUE)
 }
@@ -2551,7 +2596,7 @@ if (!opt$skip_one_vs_all) {
                 log_file = log_file
             )
         }
-    }, workers = opt$cores)
+    }, workers = contrast_workers)
 }
 
 cat("Analysis complete.\n", file=log_file, append=TRUE)
