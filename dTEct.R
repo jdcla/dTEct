@@ -1217,6 +1217,10 @@ set_edgeR_contrast_cache_result <- function(cache, cache_key, res, max_entries =
 
 eval_contrast <- function(fit, contrast, out_prefix, title, log_file, remap_to_transcript = FALSE) {
     cleaned_contrast <- sub("^makeContrasts\\(", "", sub(", levels=.*\\)$", "", contrast))
+    if (isTRUE(opt$skip_existing_results) && file.exists(paste0(out_prefix, ".csv"))) {
+        cat("Skipping existing contrast ", title, " -> ", paste0(out_prefix, ".csv"), "\n", file = log_file, append = TRUE)
+        return(invisible(NULL))
+    }
     cat("Evaluating contrast ", title, " : ", cleaned_contrast, "\n", file = log_file, append = TRUE)
 
     contrast_matrix <- eval(parse(text = contrast))
@@ -1571,6 +1575,7 @@ option_list <- list(
     make_option(c("-S", "--save_model"), type="character", default=NULL, metavar="path", help="Path to save the fitted model (RData file). Defaults to 'dTEct_model.RData' in outdir if not specified. Ignored if --load_model is used."),
     make_option(c("-L", "--load_model"), type="character", default=NULL, metavar="path", help="Path to load a pre-fitted model from (skips fitting)."),
     make_option(c("-k", "--skip_pairwise"), action="store_true", default=FALSE, help="If set, skips all pairwise contrasts and only runs One-vs-All (if enabled)."),
+    make_option(c("--skip_existing_results"), action="store_true", default=FALSE, help="If set, skip any contrast whose output CSV already exists. Intended for resuming interrupted output-only runs."),
     make_option(c("-T", "--test_run"), action="store_true", default=FALSE, help="Run in test mode: subsets data to first valid contrast and fraction of genes for rapid debugging."),
     make_option(c("-A", "--use_anota2"), action="store_true", default=FALSE, help="Use anota2seq for RNA, Ribo, and dTE contrasts. TE output is not generated in this mode.")
 )
@@ -1659,6 +1664,7 @@ if (!is.null(opt$load_model)) {
   opt$cores <- runtime_opt$cores
   opt$skip_pairwise <- runtime_opt$skip_pairwise
   opt$skip_one_vs_all <- runtime_opt$skip_one_vs_all
+  opt$skip_existing_results <- runtime_opt$skip_existing_results
   opt$one_vs_all <- runtime_opt$one_vs_all
   opt$plot_ids <- runtime_opt$plot_ids
   opt$save_model <- NULL
@@ -1679,7 +1685,7 @@ if (!is.null(opt$load_model)) {
   log_file <- paste0(opt$outdir, "run_info.txt")
   cat("Model loaded. Skipping data processing and fitting.\n", file = log_file, append = TRUE)
   cat(sprintf("Using runtime overrides after model load: outdir=%s, cores=%d\n", opt$outdir, opt$cores), file = log_file, append = TRUE)
-  cat(sprintf("Effective contrast flags after model load: skip_pairwise=%s, skip_one_vs_all=%s, use_anota2=%s\n", opt$skip_pairwise, opt$skip_one_vs_all, opt$use_anota2), file = log_file, append = TRUE)
+  cat(sprintf("Effective contrast flags after model load: skip_pairwise=%s, skip_one_vs_all=%s, skip_existing_results=%s, use_anota2=%s\n", opt$skip_pairwise, opt$skip_one_vs_all, opt$skip_existing_results, opt$use_anota2), file = log_file, append = TRUE)
   cat(sprintf("BiocParallel workers=%d; thread guards=%s\n", opt$cores, paste(sprintf("%s=%s", thread_guard_vars, Sys.getenv(thread_guard_vars, unset = NA_character_)), collapse=", ")), file = log_file, append = TRUE)
   
 } else {
