@@ -2,7 +2,7 @@
 
 ## Overview
 
-This R pipeline is designed for comprehensive analysis of RNA-sequencing (RNA-seq) and Ribosome Profiling (Ribo-seq) data. It automates the process of quality control, differential gene expression (DE), and differential translation efficiency (dTE) analysis. The script is built upon robust Bioconductor packages like `edgeR` and leverages `ggplot2` and `pheatmap` for generating publication-quality visualizations.
+This R pipeline is designed for comprehensive analysis of RNA-sequencing (RNA-seq) and Ribosome Profiling (Ribo-seq) data. It automates quality control, differential expression (DE), and differential translation efficiency (dTE) analysis. The default statistical engine is `edgeR`; optional `--use_anota2` mode runs paired RNA/Ribo/dTE contrasts through `anota2seq`. The script also uses `ggplot2`, `pheatmap`, and `EnhancedVolcano` for visualization.
 
 A key feature of this pipeline is its ability to automatically discover and evaluate complex comparisons (contrasts) based on a structured metadata file, making it highly adaptable to various experimental designs.
 
@@ -10,12 +10,13 @@ A key feature of this pipeline is its ability to automatically discover and eval
 
 * **Integrated Analysis:** Simultaneously analyzes RNA-seq and Ribo-seq data to distinguish between transcriptional and translational regulation.
 * **Dual-Mode Analysis:** Supports both **Gene-Level** (standard intersection) and **Transcript-Level** analysis (expanding RNA transcripts to match multiple Open Reading Frames/Translons).
-* **Robust Variance Modeling:** Fits two separate statistical models (Paired and Independent) to ensure RNA-seq statistics are not penalized by the higher variance typically found in Ribo-seq data.
+* **Robust Variance Modeling:** In edgeR mode, fits paired and RNA-independent quasi-likelihood models so RNA-seq statistics are not penalized by the higher variance typically found in Ribo-seq data.
+* **Optional anota2seq Engine:** With `--use_anota2`, computes RNA, Ribo, and dTE contrasts using anota2seq's paired RNA/Ribo model. TE outputs are not generated in this mode.
 * **Flexible Design:** Supports single-factor and multi-factorial experimental designs.
 * **Automated Contrast Generation:** Intelligently identifies relevant comparisons from the metadata, including hierarchical and combinatorial groups.
 * **Comprehensive QC:** Generates a suite of quality control plots, including MDS, PCA, sample distance heatmaps, and gene clustering heatmaps.
 * **Rich Visualization:** Produces volcano plots for every differential analysis to easily identify significant genes.
-* **Parallel Processing:** Utilizes the `BiocParallel` package to speed up computationally intensive steps.
+* **Parallel Processing:** Uses `BiocParallel` for edgeR contrast execution. anota2seq contrast execution and final output writing are serial because forked workers have shown package lazy-load failures in the shared container environment.
 
 ## System Requirements
 
@@ -25,7 +26,7 @@ This script is designed to run in an R environment. You will need the following 
 
 The easiest use of this script is by running the singularity container present on the turbo share, on any UM Linux system:
 ```bash
-singularity exec /nfs/turbo/umms-prensnerturbo/shared/workflows/singularities/DE_tools.sif dTEct.R <function flags>
+singularity exec /nfs/turbo/umms-prensnerturbo/shared/workflows/singularities/DE_tools_202606.sif Rscript dTEct.R <function flags>
 ```
 
 Alternatively, you can install all required packages by running the following commands in your R console:
@@ -38,7 +39,7 @@ install.packages(c("optparse", "tidyverse", "pheatmap", "RColorBrewer", "ggplot2
 if (!require("BiocManager", quietly = TRUE))
     install.packages("BiocManager")
 
-BiocManager::install(c("edgeR", "DESeq2", "EnhancedVolcano", "DEFormats", "BiocParallel"))
+BiocManager::install(c("edgeR", "DESeq2", "EnhancedVolcano", "DEFormats", "BiocParallel", "anota2seq"))
 ```
 
 ## Input Files
@@ -122,10 +123,20 @@ Make sure to create an output directory first (e.g., `example_out/`). Within thi
     * `dTE/`: Results for differential Translation Efficiency (dTE) between groups.
     * `QC/`: Directory containing MDS, PCA, Heatmaps, and Gene Clustering plots.
     * `run_info.txt`: A log file containing details about the run, including the design formula and contrast groups.
+    * `anota2seq_cache/`: Disk cache for completed anota2seq contrast outputs when `--use_anota2` is set.
+    * `anota2seq_contrasts/`: Exported anota2seq contrast matrices and metadata when `--use_anota2` is set.
 
 Each analysis subfolder (`RNA`, `Ribo`, `dTE`, etc.) will contain:
 * `*.csv`: A table of differential expression results for a specific contrast.
 * `*_Volcano.png`: A volcano plot visualizing the results from the corresponding CSV file.
+
+All result CSVs use the same leading columns:
+
+```text
+gene_id,gene_name,row_id,transcript_id,logFC,logCPM,F,PValue,FDR
+```
+
+In transcript-level Ribo/dTE outputs, `row_id` remains the Ribo/translon feature ID and `transcript_id` reports the parent transcript when available. RNA outputs report transcript IDs.
 
 ---
 
@@ -173,16 +184,66 @@ This is the most powerful feature of the pipeline. The `--contrast_cols` argumen
 The pipeline automatically performs several types of analyses:
 
 * **Transcriptional Output (RNA-seq DE):**
-    * **Model:** Uses an **Independent Model**. This estimates dispersion using *only* RNA samples to ensure RNA statistics are not penalized by the higher variance of Ribo-seq data.
-    * **Output:** `RNA/*_RNA_full.csv` (Recommended) and `RNA/*_RNA.csv` (Paired/Shared model).
+    * **edgeR mode:** Uses an independent RNA model for `RNA/*_RNA_full.csv` and a paired/shared model for `RNA/*_RNA.csv`.
+    * **anota2seq mode:** Uses anota2seq `analysis = "total mRNA"` and writes `RNA/*_RNA.csv`.
 
 * **Translational Output (Ribo-seq DE):**
-    * **Model:** Uses the **Paired Model**. Measures changes in total ribosome occupancy.
+    * **edgeR mode:** Uses the paired model. Measures changes in total ribosome occupancy.
+    * **anota2seq mode:** Uses anota2seq `analysis = "translated mRNA"`.
     * **Output:** `Ribo/`.
 
 * **Differential Translation Efficiency (dTE):**
-    * **Model:** Uses the **Paired Model** (Interaction term). Identifies genes where the *change* in ribosome loading differs significantly from the *change* in transcription.
+    * **edgeR mode:** Uses the paired model interaction contrast. Identifies features where the change in ribosome loading differs significantly from the change in transcription.
+    * **anota2seq mode:** Uses anota2seq `analysis = "translation"`.
     * **Output:** `dTE/`.
+
+* **Translation Efficiency (TE):**
+    * **edgeR mode:** Writes `TE/` contrasts for within-group Ribo-vs-RNA effects.
+    * **anota2seq mode:** Not generated. anota2seq mode writes only `RNA/`, `Ribo/`, and `dTE/`.
+
+### anota2seq Mode
+
+Use `--use_anota2` when both RNA and Ribo counts are present and samples can be paired by `smart_id`.
+
+Important behavior:
+
+* Only biological samples with both RNA and Ribo data are used.
+* Phenotype classes with fewer than two paired samples are dropped from anota2seq setup.
+* anota2seq contrast computation is batched and cached on disk under `anota2seq_cache/`.
+* anota2seq contrast matrices are exported under `anota2seq_contrasts/`.
+* anota2seq output writing is done directly from the batched cache; the script exits after writing RNA/Ribo/dTE outputs and does not run the edgeR contrast loops.
+* `filterZeroGenes` is explicitly set to `FALSE`. This is intentional: anota2seq's default zero-count filter removes any feature with a zero in any paired sample, which can reduce large transcript/translon datasets to only a handful of rows. With `filterZeroGenes = FALSE`, outputs retain the full paired feature universe.
+* The script stops if anota2seq returns fewer rows than were provided to it, to avoid silently writing truncated result tables.
+
+Current anota2seq output field mapping:
+
+| Output column | anota2seq source |
+| ------------- | ---------------- |
+| `logFC`       | `apvEff`         |
+| `F`           | `apvRvmF`        |
+| `PValue`      | `apvRvmP`        |
+| `FDR`         | `apvRvmPAdj`     |
+
+When changing feature filtering, feature IDs, or anota2seq model construction, rebuild the model instead of using an old `--load_model`. Old anota2seq caches are keyed by contrast and feature universe, but old model files still contain the model that was built at the time.
+
+Example anota2seq run:
+
+```bash
+singularity exec /nfs/turbo/umms-prensnerturbo/shared/workflows/singularities/DE_tools_202606.sif Rscript dTEct.R \
+    --metadata sample_sheet_no_cell_lines.csv \
+    --rna_counts rna/no_agg_NumReads.csv \
+    --ribo_counts ribo/no_agg_NumReads.csv \
+    --tx_table_path tx_table.csv \
+    --feature_level transcript \
+    --outdir out_no_agg_no_cell_lines_anota2seq/ \
+    --count_col 5 \
+    --contrast_cols "disease_id" \
+    --cores 6 \
+    --save_model out_no_agg_no_cell_lines_anota2seq/dTEct_model.RData \
+    --no_batch_factor \
+    --use_anota2 \
+    --skip_pairwise
+```
 
 ### Deduplication (Transcript Mode)
 When running in `transcript` mode, multiple Translons (ORFs) can map to a single Transcript. This requires expanding the RNA matrix for dTE analysis.
