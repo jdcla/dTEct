@@ -911,6 +911,11 @@ format_elapsed <- function(start_time) {
     sprintf("%.1f min", elapsed / 60)
 }
 
+anota2seq_feature_chunk_size <- as.integer(Sys.getenv("DTECT_ANOTA2SEQ_CHUNK_SIZE", "5000"))
+if (is.na(anota2seq_feature_chunk_size) || anota2seq_feature_chunk_size < 100L) {
+    anota2seq_feature_chunk_size <- 5000L
+}
+
 progress_msg <- function(message, log_file = NULL) {
     line <- paste0(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), " | ", message, "\n")
     cat(line)
@@ -996,41 +1001,101 @@ save_anota2seq_disk_cache_result <- function(cache_dir, key, result) {
     invisible(NULL)
 }
 
+subset_anota2seq_features <- function(ads, row_idx) {
+    ads_chunk <- ads
+    ads_chunk@dataT <- ads@dataT[row_idx, , drop=FALSE]
+    ads_chunk@dataP <- ads@dataP[row_idx, , drop=FALSE]
+    ads_chunk@contrasts <- NULL
+    ads_chunk@qualityControl <- NULL
+    ads_chunk@residOutlierTest <- NULL
+    ads_chunk@translatedmRNA <- NULL
+    ads_chunk@totalmRNA <- NULL
+    ads_chunk@translation <- NULL
+    ads_chunk@buffering <- NULL
+    ads_chunk@selectedTranslatedmRNA <- NULL
+    ads_chunk@selectedTotalmRNA <- NULL
+    ads_chunk@selectedTranslation <- NULL
+    ads_chunk@selectedBuffering <- NULL
+    ads_chunk@mRNAAbundance <- NULL
+    ads_chunk@deltaData <- NULL
+    ads_chunk
+}
+
 evaluate_anota2seq_batch <- function(ads, batch, analysis_name, batch_index, total_batches, log_file) {
     start_time <- Sys.time()
+    feature_count <- nrow(ads@dataP)
+    chunk_size <- min(anota2seq_feature_chunk_size, feature_count)
+    chunk_starts <- seq.int(1L, feature_count, by=chunk_size)
+    chunk_ranges <- lapply(chunk_starts, function(start) start:min(start + chunk_size - 1L, feature_count))
+
     progress_msg(sprintf(
-        "Starting anota2seq %s batch %d/%d: %d requested outputs; contrast matrix %d x %d",
-        analysis_name, batch_index, total_batches, length(batch$jobs), nrow(batch$matrix), ncol(batch$matrix)
+        "Starting anota2seq %s batch %d/%d: %d requested outputs; contrast matrix %d x %d; %d features in %d chunks of up to %d",
+        analysis_name, batch_index, total_batches, length(batch$jobs), nrow(batch$matrix), ncol(batch$matrix),
+        feature_count, length(chunk_ranges), chunk_size
     ), log_file)
     progress_msg("  Note: only requested contrast columns are reported; filler columns are included only to satisfy anota2seq full-rank requirements.", log_file)
 
-    suppressMessages(suppressWarnings(capture.output({
-        ads_res <- anota2seq::anota2seqAnalyze(
-            Anota2seqDataSet = ads,
-            contrasts = batch$matrix,
-            analysis = analysis_name,
-            useProgBar = FALSE,
-            fileStem = tempfile("anota2seq_", tmpdir=tempdir())
-        )
-    }, file = NULL)))
+    result_parts <- vector("list", length(batch$jobs))
+    for (i in seq_along(result_parts)) result_parts[[i]] <- list()
+
+    for (chunk_index in seq_along(chunk_ranges)) {
+        row_idx <- chunk_ranges[[chunk_index]]
+        chunk_start_time <- Sys.time()
+        progress_msg(sprintf(
+            "  Running anota2seq %s batch %d/%d chunk %d/%d: rows %d-%d",
+            analysis_name, batch_index, total_batches, chunk_index, length(chunk_ranges), min(row_idx), max(row_idx)
+        ), log_file)
+
+        ads_chunk <- subset_anota2seq_features(ads, row_idx)
+        suppressMessages(suppressWarnings(capture.output({
+            ads_res <- anota2seq::anota2seqAnalyze(
+                Anota2seqDataSet = ads_chunk,
+                contrasts = batch$matrix,
+                analysis = analysis_name,
+                useProgBar = FALSE,
+                fileStem = tempfile("anota2seq_", tmpdir=tempdir())
+            )
+        }, file = NULL)))
+
+        for (i in seq_along(batch$jobs)) {
+            res <- as.data.frame(anota2seq::anota2seqGetOutput(
+                object = ads_res,
+                analysis = analysis_name,
+                output = "full",
+                selContrast = i,
+                getRVM = TRUE
+            ))
+            result_parts[[i]][[chunk_index]] <- res
+        }
+
+        rm(ads_chunk, ads_res)
+        gc(verbose=FALSE)
+        progress_msg(sprintf(
+            "  Finished anota2seq %s batch %d/%d chunk %d/%d in %s",
+            analysis_name, batch_index, total_batches, chunk_index, length(chunk_ranges), format_elapsed(chunk_start_time)
+        ), log_file)
+    }
 
     progress_msg(sprintf(
-        "Finished anota2seqAnalyze for %s batch %d/%d in %s; extracting %d outputs",
+        "Finished anota2seqAnalyze for %s batch %d/%d in %s; combining %d outputs",
         analysis_name, batch_index, total_batches, format_elapsed(start_time), length(batch$jobs)
     ), log_file)
 
     results <- list()
     for (i in seq_along(batch$jobs)) {
-        res <- as.data.frame(anota2seq::anota2seqGetOutput(
-            object = ads_res,
-            analysis = analysis_name,
-            output = "full",
-            selContrast = i,
-            getRVM = TRUE
-        ))
+        res <- do.call(rbind, result_parts[[i]])
+        if (nrow(res) != feature_count) {
+            stop(sprintf(
+                "anota2seq %s batch %d output %d returned %d/%d rows after feature chunking.",
+                analysis_name, batch_index, i, nrow(res), feature_count
+            ))
+        }
+        if ("apvRvmP" %in% colnames(res)) {
+            res$apvRvmPAdj <- p.adjust(res$apvRvmP, method="BH")
+        }
         results[[batch$jobs[[i]]$key]] <- res
         progress_msg(sprintf(
-            "  Extracted anota2seq %s batch %d/%d output %d/%d: %s",
+            "  Combined anota2seq %s batch %d/%d output %d/%d: %s",
             analysis_name, batch_index, total_batches, i, length(batch$jobs), batch$jobs[[i]]$title
         ), log_file)
     }

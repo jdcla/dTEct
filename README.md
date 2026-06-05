@@ -211,9 +211,17 @@ Important behavior:
 * Phenotype classes with fewer than two paired samples are dropped from anota2seq setup.
 * anota2seq contrast computation is batched and cached on disk under `anota2seq_cache/`.
 * anota2seq contrast matrices are exported under `anota2seq_contrasts/`.
+* Large feature matrices are processed in feature chunks inside each anota2seq contrast batch to avoid native-code segmentation faults in `anota2seqAnalyze()`. The default chunk size is 5000 features.
 * anota2seq output writing is done directly from the batched cache; the script exits after writing RNA/Ribo/dTE outputs and does not run the edgeR contrast loops.
 * `filterZeroGenes` is explicitly set to `FALSE`. This is intentional: anota2seq's default zero-count filter removes any feature with a zero in any paired sample, which can reduce large transcript/translon datasets to only a handful of rows. With `filterZeroGenes = FALSE`, outputs retain the full paired feature universe.
 * The script stops if anota2seq returns fewer rows than were provided to it, to avoid silently writing truncated result tables.
+* After feature chunks are combined, `FDR` is recomputed from the combined `PValue` vector so adjusted p-values are global across all reported features.
+
+The feature chunk size can be changed with the `DTECT_ANOTA2SEQ_CHUNK_SIZE` environment variable. Lower it if the container still faults during `anota2seqAnalyze()`; increase it only if memory is stable.
+
+```bash
+export DTECT_ANOTA2SEQ_CHUNK_SIZE=2000
+```
 
 Current anota2seq output field mapping:
 
