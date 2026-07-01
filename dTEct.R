@@ -1280,6 +1280,44 @@ set_edgeR_contrast_cache_result <- function(cache, cache_key, res, max_entries =
     attr(cache, "keys") <- cache_keys
 }
 
+estimate_edgeR_dispersion <- function(dge_obj, design_matrix, log_file, label) {
+    large_feature_threshold <- as.integer(Sys.getenv("DTECT_EDGER_SUBSET_DISP_THRESHOLD", "50000"))
+    if (is.na(large_feature_threshold) || large_feature_threshold < 1L) large_feature_threshold <- 50000L
+    subset_features <- as.integer(Sys.getenv("DTECT_EDGER_DISP_SUBSET_FEATURES", "1000"))
+    if (is.na(subset_features) || subset_features < 100L) subset_features <- 1000L
+
+    n_features <- nrow(dge_obj$counts)
+    if (n_features >= large_feature_threshold) {
+        row_totals <- rowSums(dge_obj$counts)
+        estimate_idx <- order(row_totals, decreasing=TRUE)[seq_len(min(subset_features, n_features))]
+        cat(sprintf(
+            "%s has %d features; estimating common dispersion on top %d expressed features to avoid unstable full-matrix edgeR dispersion estimation.\n",
+            label, n_features, length(estimate_idx)
+        ), file=log_file, append=TRUE)
+        dge_est <- dge_obj[estimate_idx, , keep.lib.sizes=TRUE]
+        dge_est <- estimateDisp(
+            dge_est,
+            design_matrix,
+            min.row.sum=30,
+            trend.method="none",
+            tagwise=FALSE
+        )
+        common_disp <- dge_est$common.dispersion
+        if (is.null(common_disp) || !is.finite(common_disp) || common_disp <= 0) {
+            stop(sprintf("Could not estimate a finite common dispersion for %s.", label))
+        }
+        dge_obj$common.dispersion <- common_disp
+        dge_obj$trended.dispersion <- rep(common_disp, n_features)
+        dge_obj$tagwise.dispersion <- rep(common_disp, n_features)
+        dge_obj$AveLogCPM <- aveLogCPM(dge_obj)
+        cat(sprintf("%s common dispersion from subset: %.6g\n", label, common_disp), file=log_file, append=TRUE)
+    } else {
+        cat(sprintf("%s has %d features; using standard edgeR dispersion estimation.\n", label, n_features), file=log_file, append=TRUE)
+        dge_obj <- estimateDisp(dge_obj, design_matrix, min.row.sum=30)
+    }
+    dge_obj
+}
+
 
 eval_contrast <- function(fit, contrast, out_prefix, title, log_file, remap_to_transcript = FALSE) {
     cleaned_contrast <- sub("^makeContrasts\\(", "", sub(", levels=.*\\)$", "", contrast))
@@ -1696,7 +1734,6 @@ if (!is.null(opt$load_model)) {
   progress_msg(paste0("Loading model from ", runtime_opt$load_model, "..."), log_file)
   load(runtime_opt$load_model)
   loaded_use_anota2 <- opt$use_anota2
-  if (is.null(loaded_use_anota2)) loaded_use_anota2 <- FALSE
 
   # A loaded model may contain the original CLI options used during fitting.
   # Preserve the runtime options from the current invocation for settings that
@@ -2520,7 +2557,7 @@ if (isTRUE(opt$use_anota2)) {
     fit_anota2seq <- build_anota2seq_dataset(dge, log_file)
 } else {
     cat("Valid contrasts found. Fitting edgeR quasi-likelihood GLM models...\n", file=log_file, append=TRUE)
-    dge <- estimateDisp(dge, design, min.row.sum=30)
+    dge <- estimate_edgeR_dispersion(dge, design, log_file, "Paired RNA/Ribo model")
     fit_paired <- glmQLFit(dge, design)
 
     # Fit Independent RNA Model
@@ -2545,7 +2582,7 @@ if (isTRUE(opt$use_anota2)) {
         dge_rna <- DGEList(counts=rna_mat_for_fit[, rna_col_ids, drop=FALSE], samples=data.frame(meta.rna))
         design.rna <- model.matrix(as.formula(f_rna), data=data.frame(meta.rna))
         dge_rna <- calcNormFactors(dge_rna, method="TMM")
-        dge_rna <- estimateDisp(dge_rna, design.rna)
+        dge_rna <- estimate_edgeR_dispersion(dge_rna, design.rna, log_file, "Independent RNA model")
         fit_rna <- glmQLFit(dge_rna, design.rna)
     }
 }
