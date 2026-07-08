@@ -15,6 +15,12 @@ suppressPackageStartupMessages({
 })
 options(show.error.locations = TRUE)
 
+log_msg <- function(..., log_file, append = TRUE) {
+  cat(...)
+  flush.console()
+  cat(..., file = log_file, append = append)
+}
+
 set_thread_guards <- function(per_process_threads = 1L) {
   per_process_threads <- max(1L, as.integer(per_process_threads))
   thread_vars <- c(
@@ -353,7 +359,7 @@ eval_gene_clusters <- function(norm_counts, meta, meta_cols, prefix, suffix) {
 calc_assay_norm_factors <- function(dge, assay_col = "seq_type", method = "TMM", log_file = NULL) {
     if (!assay_col %in% colnames(dge$samples)) {
         if (!is.null(log_file)) {
-            cat("Assay column not found; falling back to global TMM normalization.\n", file=log_file, append=TRUE)
+            log_msg("Assay column not found; falling back to global TMM normalization.\n", log_file = log_file)
         }
         return(calcNormFactors(dge, method=method))
     }
@@ -361,14 +367,14 @@ calc_assay_norm_factors <- function(dge, assay_col = "seq_type", method = "TMM",
     dge$samples$norm.factors <- 1
     assays <- sort(unique(as.character(dge$samples[[assay_col]])))
     if (!is.null(log_file)) {
-        cat("Using assay-specific TMM normalization by ", assay_col, ".\n", sep="", file=log_file, append=TRUE)
+        log_msg("Using assay-specific TMM normalization by ", assay_col, ".\n", sep="", log_file = log_file)
     }
 
     for (assay in assays) {
         idx <- as.character(dge$samples[[assay_col]]) == assay
         if (sum(idx) < 2) {
             if (!is.null(log_file)) {
-                cat("  Skipping TMM for assay '", assay, "' (fewer than 2 samples).\n", sep="", file=log_file, append=TRUE)
+                log_msg("  Skipping TMM for assay '", assay, "' (fewer than 2 samples).\n", sep="", log_file = log_file)
             }
             next
         }
@@ -377,7 +383,7 @@ calc_assay_norm_factors <- function(dge, assay_col = "seq_type", method = "TMM",
         sub_dge <- calcNormFactors(sub_dge, method=method)
         dge$samples$norm.factors[idx] <- sub_dge$samples$norm.factors
         if (!is.null(log_file)) {
-            cat("  Normalized assay '", assay, "' with ", sum(idx), " samples.\n", sep="", file=log_file, append=TRUE)
+            log_msg("  Normalized assay '", assay, "' with ", sum(idx), " samples.\n", sep="", log_file = log_file)
         }
     }
 
@@ -1290,10 +1296,10 @@ estimate_edgeR_dispersion <- function(dge_obj, design_matrix, log_file, label) {
     if (n_features >= large_feature_threshold) {
         row_totals <- rowSums(dge_obj$counts)
         estimate_idx <- order(row_totals, decreasing=TRUE)[seq_len(min(subset_features, n_features))]
-        cat(sprintf(
+        log_msg(sprintf(
             "%s has %d features; estimating common dispersion on top %d expressed features to avoid unstable full-matrix edgeR dispersion estimation.\n",
             label, n_features, length(estimate_idx)
-        ), file=log_file, append=TRUE)
+        ), log_file = log_file)
         dge_est <- dge_obj[estimate_idx, , keep.lib.sizes=TRUE]
         dge_est <- estimateDisp(
             dge_est,
@@ -1310,9 +1316,9 @@ estimate_edgeR_dispersion <- function(dge_obj, design_matrix, log_file, label) {
         dge_obj$trended.dispersion <- rep(common_disp, n_features)
         dge_obj$tagwise.dispersion <- rep(common_disp, n_features)
         dge_obj$AveLogCPM <- aveLogCPM(dge_obj)
-        cat(sprintf("%s common dispersion from subset: %.6g\n", label, common_disp), file=log_file, append=TRUE)
+        log_msg(sprintf("%s common dispersion from subset: %.6g\n", label, common_disp), log_file = log_file)
     } else {
-        cat(sprintf("%s has %d features; using standard edgeR dispersion estimation.\n", label, n_features), file=log_file, append=TRUE)
+        log_msg(sprintf("%s has %d features; using standard edgeR dispersion estimation.\n", label, n_features), log_file = log_file)
         dge_obj <- estimateDisp(dge_obj, design_matrix, min.row.sum=30)
     }
     dge_obj
@@ -1322,10 +1328,10 @@ estimate_edgeR_dispersion <- function(dge_obj, design_matrix, log_file, label) {
 eval_contrast <- function(fit, contrast, out_prefix, title, log_file, remap_to_transcript = FALSE) {
     cleaned_contrast <- sub("^makeContrasts\\(", "", sub(", levels=.*\\)$", "", contrast))
     if (isTRUE(opt$skip_existing_results) && file.exists(paste0(out_prefix, ".csv"))) {
-        cat("Skipping existing contrast ", title, " -> ", paste0(out_prefix, ".csv"), "\n", file = log_file, append = TRUE)
+        log_msg("Skipping existing contrast ", title, " -> ", paste0(out_prefix, ".csv"), "\n", log_file = log_file)
         return(invisible(NULL))
     }
-    cat("Evaluating contrast ", title, " : ", cleaned_contrast, "\n", file = log_file, append = TRUE)
+    log_msg("Evaluating contrast ", title, " : ", cleaned_contrast, "\n", log_file = log_file)
 
     contrast_matrix <- eval(parse(text = contrast))
     cache <- get_edgeR_contrast_cache()
@@ -1809,7 +1815,7 @@ if (!is.null(opt$ribo_counts)) {
   # report the colnames of ribo_counts
   print(str_c("Ribo counts columns: ", paste(colnames(ribo_counts), collapse = ", ")))
   # Log the number of rows and columns in ribo_counts
-  cat("Ribo counts matrix dimensions: ", nrow(ribo_counts), " rows, ", ncol(ribo_counts), " columns\n", file = log_file, append = TRUE)
+  log_msg("Ribo counts matrix dimensions: ", nrow(ribo_counts), " rows, ", ncol(ribo_counts), " columns\n", log_file = log_file)
   ribo_ids <- rownames(ribo_counts)
 }
 if (!is.null(opt$rna_counts)) {
@@ -1831,7 +1837,7 @@ if (!is.null(opt$rna_counts)) {
   # report the colnames of ribo_counts
   print(str_c("RNA counts columns: ", paste(colnames(rna_counts), collapse = ", ")))
   # Log the number of rows and columns in rna_counts
-  cat("RNA counts matrix dimensions: ", nrow(rna_counts), " rows, ", ncol(rna_counts), " columns\n", file = log_file, append = TRUE)
+  log_msg("RNA counts matrix dimensions: ", nrow(rna_counts), " rows, ", ncol(rna_counts), " columns\n", log_file = log_file)
   rna_ids <- rownames(rna_counts)
 }
 
@@ -1842,8 +1848,7 @@ if (!is.null(opt$tx_table_path)) {
 
   if (opt$feature_level %in% c("transcript", "translon")) {
      # --- TRANSCRIPT/TRANSLON MODE ---
-     cat("Generating feature2name map for TRANSCRIPT/TRANSLON level analysis...
-", file = log_file, append = TRUE)
+     log_msg("Generating feature2name map for TRANSCRIPT/TRANSLON level analysis...\n", log_file = log_file)
   
 
 
@@ -1876,7 +1881,7 @@ if (!is.null(opt$tx_table_path)) {
      
   } else {
     # --- GENE MODE ---
-    cat("Generating feature2name map for GENE level analysis...\n", file = log_file, append = TRUE)
+    log_msg("Generating feature2name map for GENE level analysis...\n", log_file = log_file)
     
     # Standard 1:1 mapping using the user-defined column (usually gene_id)
     feature2name <- (
@@ -1891,7 +1896,7 @@ if (!is.null(opt$tx_table_path)) {
   }
 } else {
     # Fallback (Dummy Map)
-    cat("No tx_table provided. Using IDs as Names.\n", file = log_file, append = TRUE)
+    log_msg("No tx_table provided. Using IDs as Names.\n", log_file = log_file)
     ids <- c()
     if(!is.null(opt$rna_counts)) ids <- c(ids, rownames(rna_counts))
     if(!is.null(opt$ribo_counts)) ids <- c(ids, rownames(ribo_counts))
@@ -1920,7 +1925,7 @@ if (!is.null(opt$rna_counts) && !is.null(opt$ribo_counts)) {
        stop("Error: 'transcript' mode requires --tx_table_path to map Translons to Transcripts.")
     }
 
-    cat("Performing Translon-level expansion (Mapping RNA transcripts to multiple Translons)...\n", file = log_file, append = TRUE)
+    log_msg("Performing Translon-level expansion (Mapping RNA transcripts to multiple Translons)...\n", log_file = log_file)
     
     # 1. Create Map: Translon ID -> Transcript ID
     # FIX: Use distinct() instead of slice() to avoid S4Vectors namespace conflict
@@ -1966,11 +1971,11 @@ if (!is.null(opt$rna_counts) && !is.null(opt$ribo_counts)) {
     
     rna_counts_select <- rna_counts_expanded
     
-    cat(sprintf("Expanded %d unique RNA transcripts to cover %d Translons.\n", length(unique(parent_ids_for_translons)), nrow(ribo_counts_select)), file = log_file, append = TRUE)
+    log_msg(sprintf("Expanded %d unique RNA transcripts to cover %d Translons.\n", length(unique(parent_ids_for_translons)), nrow(ribo_counts_select)), log_file = log_file)
     
   } else {
     # --- B. GENE MODE (Simple Intersection) ---
-    cat("Performing Gene-level intersection (1:1 Matching)...\n", file = log_file, append = TRUE)
+    log_msg("Performing Gene-level intersection (1:1 Matching)...\n", log_file = log_file)
     
     # We assume rownames are Gene IDs in both matrices
     common_ids <- intersect(rownames(rna_counts), rownames(ribo_counts))
@@ -1982,7 +1987,7 @@ if (!is.null(opt$rna_counts) && !is.null(opt$ribo_counts)) {
     ribo_counts_select <- ribo_counts[common_ids, , drop=FALSE]
     rna_counts_select <- rna_counts[common_ids, , drop=FALSE]
     
-    cat(sprintf("Intersected %d genes common to both datasets.\n", length(common_ids)), file = log_file, append = TRUE)
+    log_msg(sprintf("Intersected %d genes common to both datasets.\n", length(common_ids)), log_file = log_file)
   }
   
   # Combine into final counts matrix for the Paired Model
@@ -2027,7 +2032,7 @@ meta.table <- (
 # -----------------------------------------------------------------------------
 # 2. DICTIONARY GENERATION & COLUMN SPLITTING
 # -----------------------------------------------------------------------------
-cat("Parsing contrast groups and splitting hierarchies...\n", file=log_file, append=TRUE)
+log_msg("Parsing contrast groups and splitting hierarchies...\n", log_file = log_file)
 
 comb_dict <- list()
 uniq_dict <- list()
@@ -2074,7 +2079,7 @@ for (column in cols_to_process) {
   })
   
   # Log
-  cat(paste0("  Column '", column, "': Max Depth = ", max_splits, "\n"), file=log_file, append=TRUE)
+  log_msg(paste0("  Column '", column, "': Max Depth = ", max_splits, "\n"), log_file = log_file)
 
   # Build Combinations
   combs <- list()
@@ -2150,9 +2155,9 @@ for (contrast in cols_to_process) {
           # Apply rename to ALL rows matching this entry (RNA AND Ribo)
           meta.table[mask_all, contrast] <- new_group
           
-          cat("Optimization: Renaming sparse subgroup (consistent):", entry, "->", new_group, "\n", file = log_file, append = TRUE)
+          log_msg("Optimization: Renaming sparse subgroup (consistent):", entry, "->", new_group, "\n", log_file = log_file)
         } else {
-          cat("Optimization: Group", entry, "has low replicates but is top-level. Keeping.\n", file = log_file, append = TRUE)
+          log_msg("Optimization: Group", entry, "has low replicates but is top-level. Keeping.\n", log_file = log_file)
         }
       }
     }
@@ -2230,8 +2235,8 @@ if (length(contrast_grps) > 0) {
     meta.samples <- meta.samples %>% 
         mutate(group = paste0(apply(meta.samples[, grouping_cols, drop=FALSE], 1, paste, collapse = "_and_"), "__", seq_type))
         
-    cat(paste0("Grouping columns used: ", paste(grouping_cols, collapse=", "), "\n"), file=log_file, append=TRUE)
-    cat(paste0("Example Group ID: ", meta.samples$group[1], "\n"), file=log_file, append=TRUE)
+    log_msg(paste0("Grouping columns used: ", paste(grouping_cols, collapse=", "), "\n"), log_file = log_file)
+    log_msg(paste0("Example Group ID: ", meta.samples$group[1], "\n"), log_file = log_file)
 
 } else {
     stop("No valid contrast columns found in metadata.")
@@ -2251,20 +2256,20 @@ if (!opt$test_run && !opt$no_batch_factor && "batch_date" %in% colnames(meta.sam
     is_nested_in_group <- all(rowSums(table(meta.samples$batch_date, meta.samples$group) > 0) == 1)
     
     if (is_nested_in_type || is_nested_in_group) {
-        cat("WARNING: 'batch_date' is perfectly collinear with experimental factors. Dropping from design to avoid rank deficiency.\n", file=log_file, append=TRUE)
+        log_msg("WARNING: 'batch_date' is perfectly collinear with experimental factors. Dropping from design to avoid rank deficiency.\n", log_file = log_file)
     } else {
         f = paste0(f, " + batch_date")
-        cat("Adding 'batch_date' to design model.\n", file=log_file, append=TRUE)
+        log_msg("Adding 'batch_date' to design model.\n", log_file = log_file)
     }
 } else if (opt$test_run) {
-    cat("TEST RUN MSG: Automatically skipping 'batch_date' to avoid rank deficiency on subset.\n", file=log_file, append=TRUE)
+    log_msg("TEST RUN MSG: Automatically skipping 'batch_date' to avoid rank deficiency on subset.\n", log_file = log_file)
 }
 
 if (!opt$test_run && "sample_type" %in% colnames(meta.samples) && has_var(meta.samples$sample_type)) {
     f = paste0(f, " + sample_type")
-    cat("Adding 'sample_type' to design model.\n", file=log_file, append=TRUE)
+    log_msg("Adding 'sample_type' to design model.\n", log_file = log_file)
 } else if (opt$test_run) {
-    cat("TEST RUN MSG: Automatically skipping 'sample_type' to avoid rank deficiency on subset.\n", file=log_file, append=TRUE)
+    log_msg("TEST RUN MSG: Automatically skipping 'sample_type' to avoid rank deficiency on subset.\n", log_file = log_file)
 }
 
 
@@ -2274,19 +2279,19 @@ design <- model.matrix(as.formula(f), data=data.frame(meta.design))
 # -----------------------------------------------------------------------------
 # 5. NORMALIZE & QC
 # -----------------------------------------------------------------------------
-cat("Constructing DGE Object with ALL samples...\n", file=log_file, append=TRUE)
-cat(paste0("Formula: ", f, "\n"), file=log_file, append=TRUE)
+log_msg("Constructing DGE Object with ALL samples...\n", log_file = log_file)
+log_msg(paste0("Formula: ", f, "\n"), log_file = log_file)
 
 # --- TEST RUN SUBSETTING ---
 if (opt$test_run) {
-  cat("\n*** TEST RUN ENABLED ***\n", file = log_file, append = TRUE)
-  cat("Subsetting data for rapid debugging...\n", file = log_file, append = TRUE)
+  log_msg("\n*** TEST RUN ENABLED ***\n", log_file = log_file)
+  log_msg("Subsetting data for rapid debugging...\n", log_file = log_file)
   
   # 1. Subset Features (Top 2000)
   n_total <- nrow(counts)
   n_keep <- min(2000, n_total)
   counts <- counts[1:n_keep, , drop=FALSE]
-  cat(sprintf("  - Kept top %d / %d features.\n", n_keep, n_total), file = log_file, append = TRUE)
+  log_msg(sprintf("  - Kept top %d / %d features.\n", n_keep, n_total), log_file = log_file)
   
   # 2. Subset Samples (First valid contrast only)
   # Ensure we keep the internal structure consistency (cols_to_process, etc.)
@@ -2294,7 +2299,7 @@ if (opt$test_run) {
   target_col <- trimws(unlist(strsplit(opt$contrast_cols, ",")))[1]
   
   if (!target_col %in% colnames(meta.table)) {
-      cat(sprintf("  - WARNING: Target contrast col '%s' not found. Using random 10 samples.\n", target_col), file = log_file, append = TRUE)
+      log_msg(sprintf("  - WARNING: Target contrast col '%s' not found. Using random 10 samples.\n", target_col), log_file = log_file)
       keep_samples <- head(colnames(counts), 10)
   } else {
       # Find groups with >= 2 replicates (to allow for variance estimation)
@@ -2326,25 +2331,25 @@ if (opt$test_run) {
           }
           
           if (length(keep_samples) < 4) {
-             cat("  - Not enough samples found after intersection. Falling back to first 20 samples.\n", file = log_file, append = TRUE)
+             log_msg("  - Not enough samples found after intersection. Falling back to first 20 samples.\n", log_file = log_file)
              keep_samples <- head(colnames(counts), 20)
           } else {
-             cat(sprintf("  - Restricted to max 5 samples from groups: %s\n", paste(grps_to_keep, collapse=", ")), file = log_file, append = TRUE)
+             log_msg(sprintf("  - Restricted to max 5 samples from groups: %s\n", paste(grps_to_keep, collapse=", ")), log_file = log_file)
           }
           
       } else {
            keep_samples <- head(colnames(counts), 20)
-           cat("  - Fewer than 2 valid groups found. Keeping first 20 samples.\n", file = log_file, append = TRUE)
+           log_msg("  - Fewer than 2 valid groups found. Keeping first 20 samples.\n", log_file = log_file)
       }
   }
   
   counts <- counts[, keep_samples, drop=FALSE]
-  cat(sprintf("  - Kept %d samples.\n", ncol(counts)), file = log_file, append = TRUE)
+  log_msg(sprintf("  - Kept %d samples.\n", ncol(counts)), log_file = log_file)
   
   # CRITICAL FIX: Subset meta.design to match counts
   meta.design <- meta.design[colnames(counts), , drop=FALSE]
   
-  cat("************************\n\n", file = log_file, append = TRUE)
+  log_msg("************************\n\n", log_file = log_file)
 }
 
 # Pre-filtering (continue normal flow)
@@ -2362,7 +2367,7 @@ dge <- dge[keep, , keep.lib.sizes = FALSE]
 dge <- calc_assay_norm_factors(dge, assay_col="seq_type", method="TMM", log_file=log_file)
 
 # --- SAVE NORMALIZED MATRICES ---
-cat("Saving normalized LogCPM matrices...\n", file=log_file, append=TRUE)
+log_msg("Saving normalized LogCPM matrices...\n", log_file = log_file)
 seq_types_present <- intersect(c("RNA", "Ribo"), unique(dge$samples$seq_type))
 
 for (st in seq_types_present) {
@@ -2388,12 +2393,12 @@ for (st in seq_types_present) {
         
         out_file <- paste0(opt$outdir, st, "_cpm_log_matrix.csv")
         write.table(formatted_data, file=out_file, sep=",", row.names = FALSE)
-        cat(paste0("  Saved: ", out_file, "\n"), file=log_file, append=TRUE)
+        log_msg(paste0("  Saved: ", out_file, "\n"), log_file = log_file)
     }
 }
 
 # --- GENERATE QC PLOTS ---
-cat("Generating QC Plots...\n", file=log_file, append=TRUE)
+log_msg("Generating QC Plots...\n", log_file = log_file)
 # Dynamic detection of all ID columns + contrast columns
 qc_cols <- unique(c(contrast_grps, grep("_id$", colnames(dge$samples), value=TRUE)))
 qc_cols <- qc_cols[qc_cols %in% colnames(dge$samples)]
@@ -2425,7 +2430,7 @@ for (lbl in names(qc_types)) {
 # Match RNA and Ribo by smart_id, concatenate their feature vectors so each
 # biological sample is a single point with features = [RNA_features; Ribo_features].
 if (length(present_types) > 1 && "RNA" %in% present_types && "Ribo" %in% present_types) {
-    cat("Building concatenated-modality matrix for joint All QC plots...\n", file=log_file, append=TRUE)
+    log_msg("Building concatenated-modality matrix for joint All QC plots...\n", log_file = log_file)
     
     # Split metadata by seq_type
     meta_rna  <- dge$samples[dge$samples$seq_type == "RNA", , drop=FALSE]
@@ -2436,8 +2441,7 @@ if (length(present_types) > 1 && "RNA" %in% present_types && "Ribo" %in% present
                             as.character(meta_ribo$smart_id))
     
     if (length(shared_ids) >= 3) {
-        cat(sprintf("  Found %d biological samples with both RNA and Ribo data.\n", length(shared_ids)),
-            file=log_file, append=TRUE)
+        log_msg(sprintf("  Found %d biological samples with both RNA and Ribo data.\n", length(shared_ids)), log_file = log_file)
         
         # For each shared smart_id, get the corresponding counts_col (row in dge$samples)
         rna_col_lookup  <- setNames(rownames(meta_rna),  as.character(meta_rna$smart_id))
@@ -2476,9 +2480,9 @@ if (length(present_types) > 1 && "RNA" %in% present_types && "Ribo" %in% present
         log_cpm_all <- cpm(dge_all, log=TRUE, normalized.lib.sizes=TRUE)
         eval_heatmap(log_cpm_all, meta_all, qc_cols, opt$outdir, "All")
         # GeneClusters_All skipped — concatenated feature space not meaningful for top-variance gene heatmap
-        cat("Joint All QC plots complete.\n", file=log_file, append=TRUE)
+        log_msg("Joint All QC plots complete.\n", log_file = log_file)
     } else {
-        cat("  Fewer than 3 shared biological samples — skipping All plots.\n", file=log_file, append=TRUE)
+        log_msg("  Fewer than 3 shared biological samples — skipping All plots.\n", log_file = log_file)
     }
 }
 
@@ -2516,7 +2520,7 @@ has_reps <- function(grp_name, meta, col_name, min_n=2) {
     return(FALSE)
 }
 
-cat("Filtering contrast lists for sufficient replicates...\n", file=log_file, append=TRUE)
+log_msg("Filtering contrast lists for sufficient replicates...\n", log_file = log_file)
 
 # Filter Combinations
 valid_comb <- list()
@@ -2524,7 +2528,7 @@ for (tup in comb_dict[[contrast_col]]) {
     if (has_reps(tup[1], meta.design, contrast_col) && has_reps(tup[2], meta.design, contrast_col)) {
         valid_comb <- append(valid_comb, list(tup))
     } else {
-        cat(paste0("Skipping contrast '", paste(tup, collapse=" vs "), "' (insufficient replicates)\n"), file=log_file, append=TRUE)
+        log_msg(paste0("Skipping contrast '", paste(tup, collapse=" vs "), "' (insufficient replicates)\n"), log_file = log_file)
     }
 }
 comb_dict[[contrast_col]] <- valid_comb
@@ -2541,22 +2545,22 @@ uniq_dict[[contrast_col]] <- valid_uniq
 # STOP Check
 num_valid_contrasts <- length(comb_dict[[contrast_col]]) + length(uniq_dict[[contrast_col]])
 if (num_valid_contrasts == 0) {
-    cat("\n----------------------------------------------------------------\n", file=log_file, append=TRUE)
-    cat("NO VALID CONTRASTS FOUND: All requested groups have insufficient replicates (n < 2 per SeqType).\n", file=log_file, append=TRUE)
-    cat("QC plots have been generated. Exiting successfully.\n", file=log_file, append=TRUE)
-    cat("----------------------------------------------------------------\n", file=log_file, append=TRUE)
+    log_msg("\n----------------------------------------------------------------\n", log_file = log_file)
+    log_msg("NO VALID CONTRASTS FOUND: All requested groups have insufficient replicates (n < 2 per SeqType).\n", log_file = log_file)
+    log_msg("QC plots have been generated. Exiting successfully.\n", log_file = log_file)
+    log_msg("----------------------------------------------------------------\n", log_file = log_file)
     quit(save="no", status=0)
 }
 
 # Fit Models
 if (isTRUE(opt$use_anota2)) {
-    cat("Valid contrasts found. Building anota2seq model...\n", file=log_file, append=TRUE)
+    log_msg("Valid contrasts found. Building anota2seq model...\n", log_file = log_file)
     fit_paired <- NULL
     fit_rna <- NULL
     design.rna <- NULL
     fit_anota2seq <- build_anota2seq_dataset(dge, log_file)
 } else {
-    cat("Valid contrasts found. Fitting edgeR quasi-likelihood GLM models...\n", file=log_file, append=TRUE)
+    log_msg("Valid contrasts found. Fitting edgeR quasi-likelihood GLM models...\n", log_file = log_file)
     dge <- estimate_edgeR_dispersion(dge, design, log_file, "Paired RNA/Ribo model")
     fit_paired <- glmQLFit(dge, design)
 
@@ -2572,7 +2576,7 @@ if (isTRUE(opt$use_anota2)) {
         # Use rna_counts_original (with transcript IDs) if available (translon mode)
         # This ensures RNA contrasts report transcript IDs (TT_*/ENST...) not ST_*/TM_...
         rna_mat_for_fit <- if (exists("rna_counts_original")) {
-            cat("Using rna_counts_original (transcript IDs) for independent RNA model.\n", file=log_file, append=TRUE)
+            log_msg("Using rna_counts_original (transcript IDs) for independent RNA model.\n", log_file = log_file)
             rna_counts_original
         } else {
             counts[, rownames(meta.rna), drop=FALSE]
@@ -2589,7 +2593,7 @@ if (isTRUE(opt$use_anota2)) {
 
 # --- SAVE MODEL LOGIC ---
 if (!is.null(opt$save_model)) {
-    cat(paste0("Saving model to ", opt$save_model, "...\n"), file=log_file, append=TRUE)
+    log_msg(paste0("Saving model to ", opt$save_model, "...\n"), log_file = log_file)
     # List of objects to save to ensure the environment is reproducible
     # We save everything relevant for the contrast execution phase
     save_objs <- c("dge", "meta.samples", "design", "contrast_col", "uniq_dict", "comb_dict",
@@ -2603,7 +2607,7 @@ if (!is.null(opt$save_model)) {
     if (exists("translon_to_transcript_map")) save_objs <- c(save_objs, "translon_to_transcript_map")
     save_objs <- save_objs[save_objs %in% ls()]
     save(list = save_objs, file = opt$save_model)
-    cat("Model saved successfully.\n", file=log_file, append=TRUE)
+    log_msg("Model saved successfully.\n", log_file = log_file)
 }
 
 } # End of if (!is.null(opt$load_model)) else block
@@ -2650,7 +2654,7 @@ if (!opt$skip_pairwise) {
         evaluate_combination_contrast(dge$samples, val, contrast_col, fit_paired, fit_rna, opt$outdir, log_file)
     }, workers = opt$cores)
 } else {
-    cat("Skipping pairwise contrasts (--skip_pairwise is TRUE).\n", file=log_file, append=TRUE)
+    log_msg("Skipping pairwise contrasts (--skip_pairwise is TRUE).\n", log_file = log_file)
 }
 
 # -----------------------------------------------------------------------------
