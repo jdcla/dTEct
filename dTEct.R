@@ -923,6 +923,14 @@ if (!is.null(opt$load_model)) {
   )
 ) |> mutate(counts_col = ifelse(data_type %in% c("RNA_seq", "ONTRNA_seq"), paste0(smart_id, "_RNA"), paste0(smart_id, "_Ribo")))
 
+# Keep only sequencing data types that actually have an associated count matrix.
+# Non-seq types (e.g. Proteomics) otherwise fall through to the '_Ribo' suffix and
+# can collide with real Ribo samples that share the same smart_id.
+allowed_dt <- c()
+if (!is.null(opt$rna_counts))  allowed_dt <- c(allowed_dt, "RNA_seq", "ONTRNA_seq")
+if (!is.null(opt$ribo_counts)) allowed_dt <- c(allowed_dt, "Ribo_seq")
+meta.table <- meta.table |> filter(data_type %in% allowed_dt)
+
 if (!is.null(opt$ribo_counts)) {
   ribo_counts <- (
       read.csv(
@@ -1403,6 +1411,11 @@ if (!opt$test_run && "sample_type" %in% colnames(meta.samples) && has_var(meta.s
 
 
 # Create Design Matrix
+dups <- unique(meta.samples$counts_col[duplicated(meta.samples$counts_col)])
+if (length(dups) > 0) {
+  stop("Duplicate 'counts_col' values detected in metadata: ", paste(dups, collapse=", "),
+       ". Each sample must map to exactly one count column (check for overlapping smart_ids across data types).")
+}
 meta.design <- meta.samples %>% column_to_rownames("counts_col")
 design <- model.matrix(as.formula(f), data=data.frame(meta.design))
 # -----------------------------------------------------------------------------
